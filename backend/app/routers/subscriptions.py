@@ -16,6 +16,7 @@ from ..models import (
 from ..schemas import ChargeOut, CostBreakdown, SubscriptionCreate, SubscriptionOut, SubscriptionUpdate
 from ..services.cost_calculator import calculate_cost
 from ..services.bank_funds import allocate_fifo
+from ..services.funding_queue import build_bank_funding_queue
 
 router = APIRouter(prefix="/api/subscriptions", tags=["subscriptions"])
 
@@ -25,26 +26,13 @@ def api_key(db: Session) -> str:
     return row.value if row else ""
 
 
-async def serialize(item: Subscription, db: Session) -> SubscriptionOut:
-    cost = await calculate_cost(item.price, item.currency, item.payment_method, item.c2c_rate, api_key(db))
+async def serialize(item: Subscription, db: Session, bank_costs: dict[int, dict] | None = None) -> SubscriptionOut:
     if item.payment_method == "bank_card":
-        required = float(cost["required_usdt"])
-        allocations, shortfall = allocate_fifo(db, required)
-        allocation_data = [allocation.as_dict() for allocation in allocations]
-        covered = round(required - shortfall, 4)
-        covered_cost = round(sum(a.usdt_amount * a.deposit.c2c_rate for a in allocations), 2)
-        status = "sufficient" if shortfall == 0 else ("partial" if covered > 0 else "empty")
-        cost.update({
-            "covered_usdt": covered,
-            "covered_cny_cost": covered_cost,
-            "shortfall_usdt": shortfall,
-            "coverage_status": status,
-            "allocations": allocation_data,
-            "cny_cost": covered_cost if status == "sufficient" else None,
-            "formula": " + ".join(
-                f"{a.usdt_amount:.4f} × ¥{a.deposit.c2c_rate:.4f}" for a in allocations
-            ) or f"需要 {required:.4f} USDT",
-        })
+        if bank_costs is None:
+            _, bank_costs = await build_bank_funding_queue(db, api_key(db))
+        cost = bank_costs[item.id]
+    else:
+        cost = await calculate_cost(item.price, item.currency, item.payment_method, item.c2c_rate, api_key(db))
     output = SubscriptionOut.model_validate(item)
     return output.model_copy(update={"cost": CostBreakdown.model_validate(cost)})
 
@@ -52,7 +40,8 @@ async def serialize(item: Subscription, db: Session) -> SubscriptionOut:
 @router.get("", response_model=list[SubscriptionOut])
 async def list_subscriptions(db: Session = Depends(get_db)):
     items = db.scalars(select(Subscription).order_by(Subscription.next_billing_date, Subscription.name)).all()
-    return [await serialize(item, db) for item in items]
+    _, bank_costs = await build_bank_funding_queue(db, api_key(db))
+    return [await serialize(item, db, bank_costs) for item in items]
 
 
 @router.post("", response_model=SubscriptionOut, status_code=201)
@@ -61,7 +50,8 @@ async def create_subscription(payload: SubscriptionCreate, db: Session = Depends
     db.add(item)
     db.commit()
     db.refresh(item)
-    return await serialize(item, db)
+    _, bank_costs = await build_bank_funding_queue(db, api_key(db))
+    return await serialize(item, db, bank_costs)
 
 
 @router.put("/{subscription_id}", response_model=SubscriptionOut)
@@ -73,7 +63,8 @@ async def update_subscription(subscription_id: int, payload: SubscriptionUpdate,
         setattr(item, key, value)
     db.commit()
     db.refresh(item)
-    return await serialize(item, db)
+    _, bank_costs = await build_bank_funding_queue(db, api_key(db))
+    return await serialize(item, db, bank_costs)
 
 
 @router.delete("/{subscription_id}", status_code=204)
@@ -105,16 +96,22 @@ async def charge_subscription(subscription_id: int, db: Session = Depends(get_db
     item = db.get(Subscription, subscription_id)
     if item is None:
         raise HTTPException(404, "Subscription not found")
-    cost = await calculate_cost(item.price, item.currency, item.payment_method, item.c2c_rate, api_key(db))
+    if item.payment_method == "bank_card":
+        _, bank_costs = await build_bank_funding_queue(db, api_key(db))
+        cost = bank_costs[item.id]
+    else:
+        cost = await calculate_cost(item.price, item.currency, item.payment_method, item.c2c_rate, api_key(db))
     charged = 0.0
     actual_cny_cost = 0.0
     allocation_data = []
     balance = db.get(BankCardBalance, 1)
     if item.payment_method == "bank_card":
         charged = float(cost["usdt_charge"])
-        preview, shortfall = allocate_fifo(db, charged)
-        if balance.balance + 1e-9 < charged or shortfall > 0.00005:
-            raise HTTPException(409, f"Insufficient USDT balance; {charged:.4f} required")
+        if cost["coverage_status"] != "sufficient":
+            raise HTTPException(
+                409,
+                f"Insufficient USDT after earlier renewals; {cost['shortfall_usdt']:.4f} more required",
+            )
         allocations, _ = allocate_fifo(db, charged, consume=True)
         allocation_data = [allocation.as_dict() for allocation in allocations]
         actual_cny_cost = round(sum(a.usdt_amount * a.deposit.c2c_rate for a in allocations), 2)

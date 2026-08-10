@@ -23,8 +23,8 @@ from ..schemas import (
     TopUpQuoteOut,
     TopUpQuoteRequest,
 )
-from ..services.cost_calculator import calculate_cost
 from ..services.bank_funds import delete_deposit_cascade
+from ..services.funding_queue import build_bank_funding_queue
 
 router = APIRouter(prefix="/api/bank-card", tags=["bank-card"])
 
@@ -88,36 +88,39 @@ def list_lots(db: Session = Depends(get_db)):
 
 @router.post("/top-up-quote", response_model=TopUpQuoteOut)
 async def top_up_quote(payload: TopUpQuoteRequest, db: Session = Depends(get_db)):
-    key = db.get(AppSettings, "exchange_rate_api_key")
-    api_key = key.value if key else ""
-    items: list[TopUpQuoteItem] = []
-    for subscription_id in payload.subscription_ids:
+    selected_ids = set(payload.subscription_ids)
+    for subscription_id in selected_ids:
         subscription = db.get(Subscription, subscription_id)
         if subscription is None:
             raise HTTPException(404, f"Subscription {subscription_id} not found")
         if subscription.payment_method != "bank_card":
             raise HTTPException(422, f"Subscription {subscription_id} is not a bank-card subscription")
-        cost = await calculate_cost(
-            subscription.price,
-            subscription.currency,
-            subscription.payment_method,
-            None,
-            api_key,
-        )
-        items.append(TopUpQuoteItem(
-            subscription_id=subscription.id,
-            name=subscription.name,
-            required_usdt=float(cost["required_usdt"]),
-        ))
+
+    key = db.get(AppSettings, "exchange_rate_api_key")
+    ordered, funding = await build_bank_funding_queue(db, key.value if key else "")
+    selected = [item for item in ordered if item.id in selected_ids]
+    items = [TopUpQuoteItem(
+        subscription_id=item.id,
+        name=item.name,
+        required_usdt=float(funding[item.id]["required_usdt"]),
+    ) for item in selected]
     required = round(sum(item.required_usdt for item in items), 4)
+    covered = round(sum(funding[item.id]["covered_usdt"] for item in selected), 4)
+    shortfall = round(sum(funding[item.id]["shortfall_usdt"] for item in selected), 4)
+    last_position = max((funding[item.id]["queue_position"] for item in selected), default=0)
+    reserved = round(sum(
+        funding[item.id]["covered_usdt"] for item in ordered
+        if item.id not in selected_ids and funding[item.id]["queue_position"] <= last_position
+    ), 4)
     balance = db.get(BankCardBalance, 1).balance
-    shortfall = round(max(required - balance, 0), 4)
     purchase = round(shortfall + 0.01, 4) if shortfall > 0 else 0
     suggested_cny = math.ceil(purchase * payload.c2c_rate * 100 - 1e-9) / 100 if purchase else 0
     return TopUpQuoteOut(
         items=items,
         required_usdt=required,
         available_usdt=balance,
+        reserved_usdt=reserved,
+        covered_usdt=covered,
         shortfall_usdt=shortfall,
         suggested_purchase_usdt=purchase,
         suggested_cny_amount=suggested_cny,

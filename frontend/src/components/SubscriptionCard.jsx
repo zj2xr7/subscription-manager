@@ -15,7 +15,7 @@ export default function SubscriptionCard({ item, onEdit, onDelete, onCharge }) {
     <p className="price">{currencySymbols[item.currency]}{item.price.toFixed(2)} <small>{item.currency} · {cycleNames[item.billing_cycle]}</small></p>
     <div className="tag-row"><span className={`method-tag ${item.payment_method}`}>{bank ? 'USDT 银行卡' : '支付宝'}</span><span className={days <= 7 ? 'due-tag urgent' : 'due-tag'}>{dueText}</span></div>
     <div className="card-cost"><span>{insufficient ? '已覆盖成本' : '预计成本'}</span><strong>¥{shownCost?.toFixed(2) || '0.00'}</strong></div>
-    {insufficient && <div className="inline-warning">还缺 {item.cost.shortfall_usdt.toFixed(4)} USDT，请先充值</div>}
+    {insufficient && <div className="inline-warning">{item.cost.reserved_before_usdt > 0 && `前序账单已预留 ${item.cost.reserved_before_usdt.toFixed(4)} USDT，`}还缺 {item.cost.shortfall_usdt.toFixed(4)} USDT，请先充值</div>}
     <details><summary>查看计算明细</summary><CostBreakdown cost={item.cost} /></details>
     <button className="charge-btn" disabled={insufficient} onClick={() => onCharge(item)}>{insufficient ? '余额不足' : '确认本期扣款'}</button>
   </article>

@@ -52,6 +52,9 @@ class CostBreakdown(BaseModel):
     shortfall_usdt: float | None = None
     coverage_status: Literal["not_applicable", "sufficient", "partial", "empty"] = "not_applicable"
     allocations: list["AllocationOut"] = Field(default_factory=list)
+    queue_position: int | None = None
+    reserved_before_usdt: float | None = None
+    available_for_charge_usdt: float | None = None
 
 
 class SubscriptionOut(SubscriptionBase):
@@ -125,6 +128,8 @@ class TopUpQuoteOut(BaseModel):
     items: list[TopUpQuoteItem]
     required_usdt: float
     available_usdt: float
+    reserved_usdt: float = 0
+    covered_usdt: float = 0
     shortfall_usdt: float
     suggested_purchase_usdt: float
     suggested_cny_amount: float

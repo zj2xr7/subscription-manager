@@ -7,28 +7,9 @@ const timeGreeting = hour => {
   return '晚上好，今天的订阅成本都在这里。'
 }
 
-const sequentialBankCosts = (subscriptions, lots) => {
-  const remaining = lots.map(lot => ({ ...lot }))
-  const costs = new Map()
-  const ordered = subscriptions.filter(item => item.payment_method === 'bank_card')
-    .sort((a, b) => a.next_billing_date.localeCompare(b.next_billing_date) || a.id - b.id)
-  ordered.forEach(item => {
-    let need = item.cost.required_usdt || 0
-    let cny = 0
-    remaining.forEach(lot => {
-      if (need <= .00005) return
-      const used = Math.min(lot.remaining_usdt, need)
-      lot.remaining_usdt -= used; need -= used; cny += used * lot.c2c_rate
-    })
-    costs.set(item.id, need <= .00005 ? cny : null)
-  })
-  return costs
-}
-
-export default function Dashboard({ subscriptions, balance, lots, loading, onNavigate }) {
+export default function Dashboard({ subscriptions, balance, loading, onNavigate }) {
   const now = new Date()
-  const bankCosts = sequentialBankCosts(subscriptions, lots)
-  const actualCost = item => item.payment_method === 'bank_card' ? bankCosts.get(item.id) : item.cost?.cny_cost
+  const actualCost = item => item.cost?.cny_cost
   const complete = subscriptions.filter(item => actualCost(item) != null)
   const incompleteCount = subscriptions.length - complete.length
   const monthly = item => item.billing_cycle === 'yearly' ? actualCost(item) / 12 : item.billing_cycle === 'custom' ? actualCost(item) * 30 / item.custom_days : actualCost(item)
