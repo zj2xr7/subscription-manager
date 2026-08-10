@@ -1,6 +1,6 @@
 from datetime import date, datetime, timezone
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -106,3 +106,39 @@ class AppSettings(Base):
 
     key: Mapped[str] = mapped_column(String(80), primary_key=True)
     value: Mapped[str] = mapped_column(String(500), default="")
+
+
+class NotificationDelivery(Base):
+    __tablename__ = "notification_deliveries"
+    __table_args__ = (
+        UniqueConstraint(
+            "subscription_id", "billing_date", "lead_days", "kind",
+            name="uq_notification_subscription_billing_lead_kind",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), default="scheduled")
+    subscription_id: Mapped[int | None] = mapped_column(
+        ForeignKey("subscriptions.id", ondelete="SET NULL"), nullable=True
+    )
+    subscription_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    billing_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    lead_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_catch_up: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    attempted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class NotificationSchedulerState(Base):
+    __tablename__ = "notification_scheduler_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    last_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="never")
+    due_count: Mapped[int] = mapped_column(Integer, default=0)
+    sent_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)

@@ -12,6 +12,7 @@ from ..models import (
     BankCardBalance,
     BankCardCharge,
     BankCardChargeAllocation,
+    NotificationDelivery,
     Subscription,
 )
 from ..schemas import (
@@ -141,6 +142,9 @@ def delete_subscription(subscription_id: int, db: Session = Depends(get_db)):
     )
     db.query(AlipayCharge).filter(AlipayCharge.subscription_id == subscription_id).update(
         {AlipayCharge.subscription_id: None}, synchronize_session=False
+    )
+    db.query(NotificationDelivery).filter(NotificationDelivery.subscription_id == subscription_id).update(
+        {NotificationDelivery.subscription_id: None}, synchronize_session=False
     )
     db.delete(item)
     db.commit()

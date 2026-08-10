@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .database import init_db
-from .routers import bank_card, exchange, settings, subscriptions
+from .routers import bank_card, exchange, notifications, settings, subscriptions
 from .tasks.scheduler import start_scheduler, stop_scheduler
 
 
@@ -30,6 +30,7 @@ app.include_router(subscriptions.router)
 app.include_router(bank_card.router)
 app.include_router(exchange.router)
 app.include_router(settings.router)
+app.include_router(notifications.router)
 
 
 @app.get("/api/health")

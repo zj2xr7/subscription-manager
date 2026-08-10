@@ -27,6 +27,7 @@ export const api = {
     ? request(`/exchange/quotes${refresh ? '?refresh=true' : ''}`)
     : request('/exchange/quotes', { method: 'POST', body: JSON.stringify({ api_key: apiKey, refresh }) }),
   settings: () => request('/settings'),
+  notificationOverview: () => request('/notifications/overview'),
   saveSettings: data => request('/settings', { method: 'PUT', body: JSON.stringify(data) }),
   saveNotificationSettings: data => request('/settings/notification', { method: 'PUT', body: JSON.stringify(data) }),
   saveExchangeRateSettings: exchange_rate_api_key => request('/settings/exchange-rate', { method: 'PUT', body: JSON.stringify({ exchange_rate_api_key }) }),
