@@ -132,7 +132,7 @@ async def top_up_quote(payload: TopUpQuoteRequest, db: Session = Depends(get_db)
 
 @router.get("/transactions")
 def list_transactions(
-    type: str = Query("all", pattern="^(all|deposit|charge|adjustment)$"),
+    type: str = Query("all", pattern="^(all|deposit|charge)$"),
     db: Session = Depends(get_db),
 ):
     transactions: list[dict] = []
@@ -165,14 +165,9 @@ def list_transactions(
             },
             "allocations": [],
             })
-    charge_kinds = []
     if type in ("all", "charge"):
-        charge_kinds.append("subscription")
-    if type in ("all", "adjustment"):
-        charge_kinds.append("historical_adjustment")
-    if charge_kinds:
         charges = db.scalars(
-            select(BankCardCharge).where(BankCardCharge.kind.in_(charge_kinds))
+            select(BankCardCharge).where(BankCardCharge.kind == "subscription")
         ).all()
         for item in charges:
             allocations = db.scalars(
@@ -182,7 +177,7 @@ def list_transactions(
             ).all()
             transactions.append({
                 "id": f"charge-{item.id}",
-                "type": "charge" if item.kind == "subscription" else "adjustment",
+                "type": "charge",
                 "title": item.subscription_name,
                 "usdt_delta": -item.charged_usdt,
                 "cny_amount": item.actual_cny_cost,

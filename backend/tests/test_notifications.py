@@ -174,7 +174,7 @@ class NotificationMigrationTests(unittest.TestCase):
                 init_db()
             with Factory() as db:
                 self.assertEqual(json.loads(db.get(AppSettings, "notification_days_before").value), [7])
-                self.assertEqual(db.get(AppSettings, "schema_version").value, "4")
+                self.assertEqual(db.get(AppSettings, "schema_version").value, "5")
                 deliveries = db.query(NotificationDelivery).all()
                 self.assertEqual(len(deliveries), 2)
                 legacy = next(item for item in deliveries if item.subscription_name == "Legacy Service")

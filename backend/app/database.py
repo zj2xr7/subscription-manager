@@ -151,4 +151,11 @@ def init_db():
             ).all():
                 delivery.error_message = sanitize_notification_error(delivery.error_message)
             version.value = "4"
+        db.flush()
+        version = db.get(models.AppSettings, "schema_version")
+        if version is None or int(version.value or 0) < 5:
+            from .services.bank_funds import purge_historical_adjustments
+
+            purge_historical_adjustments(db)
+            version.value = "5"
         db.commit()

@@ -1,11 +1,16 @@
 import unittest
 from datetime import date, datetime
+from unittest.mock import patch
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
-from app.database import Base
+from app.database import Base, get_db, init_db
 from app.models import (
+    AppSettings,
     BankCardBalance,
     BankCardCharge,
     BankCardChargeAllocation,
@@ -13,6 +18,7 @@ from app.models import (
     Subscription,
 )
 from app.services.bank_funds import DepositAlreadyUsedError, allocate_fifo, delete_deposit_cascade
+from app.routers.bank_card import router as bank_card_router
 
 
 class BankFundsTests(unittest.TestCase):
@@ -119,6 +125,84 @@ class BankFundsTests(unittest.TestCase):
         self.db.commit()
         with self.assertRaises(DepositAlreadyUsedError):
             delete_deposit_cascade(self.db, 1)
+
+
+class HistoricalAdjustmentCleanupTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
+        )
+        Base.metadata.create_all(self.engine)
+        self.Factory = sessionmaker(bind=self.engine, autoflush=False, autocommit=False)
+        with self.Factory() as db:
+            db.add_all([
+                AppSettings(key="schema_version", value="4"),
+                BankCardBalance(id=1, balance=10),
+                BankCardDeposit(id=1, usdt_amount=10.01, c2c_rate=6.5, cny_cost=65.07, chain_fee=.01, actual_received=10, remaining_usdt=7),
+                BankCardDeposit(id=2, usdt_amount=10.01, c2c_rate=7, cny_cost=70.07, chain_fee=.01, actual_received=10, remaining_usdt=3),
+            ])
+            subscription = Subscription(
+                name="Service", price=5, currency="USD", billing_cycle="monthly",
+                next_billing_date=date(2026, 3, 1), payment_method="bank_card",
+            )
+            db.add(subscription)
+            db.flush()
+            adjustment = BankCardCharge(
+                kind="historical_adjustment", subscription_name="Historical adjustment",
+                charged_usdt=1, actual_cny_cost=6.5, balance_before=20, balance_after=19,
+            )
+            first = BankCardCharge(
+                kind="subscription", subscription_id=subscription.id, subscription_name="Service",
+                charged_usdt=5, actual_cny_cost=34, balance_before=19, balance_after=14,
+                billing_date=date(2026, 1, 1), next_billing_date=date(2026, 2, 1),
+            )
+            second = BankCardCharge(
+                kind="subscription", subscription_id=subscription.id, subscription_name="Service",
+                charged_usdt=4, actual_cny_cost=28, balance_before=14, balance_after=10,
+                billing_date=date(2026, 2, 1), next_billing_date=date(2026, 3, 1),
+            )
+            db.add_all([adjustment, first, second])
+            db.flush()
+            db.add_all([
+                BankCardChargeAllocation(charge_id=adjustment.id, deposit_id=1, usdt_amount=1, c2c_rate=6.5, cny_cost=6.5),
+                BankCardChargeAllocation(charge_id=first.id, deposit_id=1, usdt_amount=2, c2c_rate=6.5, cny_cost=13),
+                BankCardChargeAllocation(charge_id=first.id, deposit_id=2, usdt_amount=3, c2c_rate=7, cny_cost=21),
+                BankCardChargeAllocation(charge_id=second.id, deposit_id=2, usdt_amount=4, c2c_rate=7, cny_cost=28),
+            ])
+            db.commit()
+
+    def tearDown(self):
+        self.engine.dispose()
+
+    def test_v5_migration_removes_adjustment_batches_and_linked_charges_idempotently(self):
+        with patch("app.database.engine", self.engine), patch("app.database.SessionLocal", self.Factory):
+            init_db()
+            init_db()
+        with self.Factory() as db:
+            self.assertEqual(db.get(AppSettings, "schema_version").value, "5")
+            self.assertIsNone(db.get(BankCardDeposit, 1))
+            self.assertEqual(db.get(BankCardDeposit, 2).remaining_usdt, 10)
+            self.assertEqual(db.get(BankCardBalance, 1).balance, 10)
+            self.assertEqual(db.query(BankCardCharge).count(), 0)
+            self.assertEqual(db.query(BankCardChargeAllocation).count(), 0)
+            subscription = db.query(Subscription).one()
+            self.assertEqual(subscription.next_billing_date, date(2026, 1, 1))
+
+    def test_transactions_exclude_adjustments_and_reject_adjustment_filter(self):
+        app = FastAPI()
+        app.include_router(bank_card_router)
+
+        def override_db():
+            with self.Factory() as db:
+                yield db
+
+        app.dependency_overrides[get_db] = override_db
+        client = TestClient(app)
+        response = client.get("/api/bank-card/transactions")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("adjustment", [item["type"] for item in response.json()])
+        rejected = client.get("/api/bank-card/transactions?type=adjustment")
+        self.assertEqual(rejected.status_code, 422)
 
 
 if __name__ == "__main__":
