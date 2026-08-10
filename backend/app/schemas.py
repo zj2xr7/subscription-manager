@@ -139,4 +139,9 @@ class TestNotificationRequest(BaseModel):
     server_chan_key: str | None = None
 
 
+class ExchangeQuoteRequest(BaseModel):
+    api_key: str = ""
+    refresh: bool = True
+
+
 CostBreakdown.model_rebuild()

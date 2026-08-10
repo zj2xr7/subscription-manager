@@ -21,7 +21,9 @@ export const api = {
   transactions: (type = 'all') => request(`/bank-card/transactions?type=${type}`),
   topUpQuote: data => request('/bank-card/top-up-quote', { method: 'POST', body: JSON.stringify(data) }),
   deposit: data => request('/bank-card/deposit', { method: 'POST', body: JSON.stringify(data) }),
-  exchangeQuotes: (refresh = false) => request(`/exchange/quotes${refresh ? '?refresh=true' : ''}`),
+  exchangeQuotes: (refresh = false, apiKey = null) => apiKey === null
+    ? request(`/exchange/quotes${refresh ? '?refresh=true' : ''}`)
+    : request('/exchange/quotes', { method: 'POST', body: JSON.stringify({ api_key: apiKey, refresh }) }),
   settings: () => request('/settings'),
   saveSettings: data => request('/settings', { method: 'PUT', body: JSON.stringify(data) }),
   testNotification: server_chan_key => request('/settings/test-notification', { method: 'POST', body: JSON.stringify({ server_chan_key }) }),
