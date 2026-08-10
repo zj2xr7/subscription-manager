@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AppSettings
+from app.models import AppSettings, NotificationDelivery
 from app.routers.settings import (
     test_notification,
     update_exchange_rate_settings,
@@ -37,11 +37,11 @@ class SettingsTests(unittest.TestCase):
 
     def test_notification_settings_save_is_independent(self):
         saved = update_notification_settings(
-            NotificationSettingsUpdate(server_chan_key=" new-send-key ", notification_days_before=12),
+            NotificationSettingsUpdate(server_chan_key=" new-send-key ", notification_days_before=[12, 3, 12]),
             self.db,
         )
         self.assertEqual(saved.server_chan_key, "new-send-key")
-        self.assertEqual(saved.notification_days_before, 12)
+        self.assertEqual(saved.notification_days_before, [12, 3])
         self.assertEqual(saved.exchange_rate_api_key, "old-rate-key")
 
     def test_exchange_key_is_saved_only_after_api_validation(self):
@@ -77,7 +77,11 @@ class SettingsTests(unittest.TestCase):
         sender = AsyncMock(return_value=True)
         with patch("app.routers.settings.send_server_chan", new=sender):
             result = asyncio.run(test_notification(TestNotificationRequest(server_chan_key="draft-key"), self.db))
-        self.assertEqual(result, {"sent": True})
+        self.assertEqual(result["sent"], True)
+        self.assertEqual(result["status"], "sent")
+        delivery = self.db.get(NotificationDelivery, result["delivery_id"])
+        self.assertEqual(delivery.kind, "test")
+        self.assertEqual(delivery.status, "sent")
         self.assertEqual(sender.await_args.args[0], "saved-send-key")
 
 

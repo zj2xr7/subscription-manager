@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Currency = Literal["USD", "GBP", "CAD", "CNY"]
 BillingCycle = Literal["monthly", "yearly", "custom"]
@@ -157,18 +157,42 @@ class TopUpQuoteOut(BaseModel):
 class SettingsOut(BaseModel):
     server_chan_key: str = ""
     exchange_rate_api_key: str = ""
-    notification_days_before: int = 7
+    notification_days_before: list[int] = Field(default_factory=lambda: [7])
 
 
 class SettingsUpdate(BaseModel):
     server_chan_key: str | None = None
     exchange_rate_api_key: str | None = None
-    notification_days_before: int | None = Field(default=None, ge=0, le=90)
+    notification_days_before: list[int] | None = None
+
+    @field_validator("notification_days_before", mode="before")
+    @classmethod
+    def coerce_notification_days(cls, value):
+        if value is None:
+            return value
+        return [value] if isinstance(value, int) else value
+
+    @field_validator("notification_days_before")
+    @classmethod
+    def validate_notification_days(cls, value):
+        if value is None:
+            return value
+        return normalize_notification_days(value)
 
 
 class NotificationSettingsUpdate(BaseModel):
     server_chan_key: str = ""
-    notification_days_before: int = Field(default=7, ge=0, le=90)
+    notification_days_before: list[int] = Field(default_factory=lambda: [7])
+
+    @field_validator("notification_days_before", mode="before")
+    @classmethod
+    def coerce_notification_days(cls, value):
+        return [value] if isinstance(value, int) else value
+
+    @field_validator("notification_days_before")
+    @classmethod
+    def validate_notification_days(cls, value):
+        return normalize_notification_days(value)
 
 
 class ExchangeRateSettingsUpdate(BaseModel):
@@ -182,6 +206,58 @@ class TestNotificationRequest(BaseModel):
 class ExchangeQuoteRequest(BaseModel):
     api_key: str = ""
     refresh: bool = True
+
+
+def normalize_notification_days(values: list[int]) -> list[int]:
+    if not values:
+        raise ValueError("At least one notification day is required")
+    if any(isinstance(value, bool) or value < 0 or value > 90 for value in values):
+        raise ValueError("Notification days must be integers between 0 and 90")
+    return sorted(set(values), reverse=True)
+
+
+class NotificationDeliveryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    kind: Literal["scheduled", "test"]
+    subscription_id: int | None
+    subscription_name: str
+    billing_date: date | None
+    lead_days: int | None
+    is_catch_up: bool
+    status: Literal["sending", "sent", "failed"]
+    error_message: str | None
+    attempted_at: datetime
+
+
+class NotificationNextOut(BaseModel):
+    subscription_id: int
+    subscription_name: str
+    billing_date: date
+    lead_days: int
+    scheduled_for: date
+
+
+class NotificationSchedulerStateOut(BaseModel):
+    running: bool
+    timezone: str = "Asia/Shanghai"
+    daily_time: str = "09:00"
+    next_run_at: datetime | None = None
+    last_started_at: datetime | None = None
+    last_completed_at: datetime | None = None
+    status: str = "never"
+    due_count: int = 0
+    sent_count: int = 0
+    failed_count: int = 0
+    error_message: str | None = None
+
+
+class NotificationOverviewOut(BaseModel):
+    enabled: bool
+    notification_days_before: list[int]
+    scheduler: NotificationSchedulerStateOut
+    next_reminders: list[NotificationNextOut]
+    recent_deliveries: list[NotificationDeliveryOut]
 
 
 CostBreakdown.model_rebuild()
