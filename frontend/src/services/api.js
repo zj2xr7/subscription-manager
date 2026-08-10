@@ -27,5 +27,7 @@ export const api = {
     : request('/exchange/quotes', { method: 'POST', body: JSON.stringify({ api_key: apiKey, refresh }) }),
   settings: () => request('/settings'),
   saveSettings: data => request('/settings', { method: 'PUT', body: JSON.stringify(data) }),
-  testNotification: server_chan_key => request('/settings/test-notification', { method: 'POST', body: JSON.stringify({ server_chan_key }) }),
+  saveNotificationSettings: data => request('/settings/notification', { method: 'PUT', body: JSON.stringify(data) }),
+  saveExchangeRateSettings: exchange_rate_api_key => request('/settings/exchange-rate', { method: 'PUT', body: JSON.stringify({ exchange_rate_api_key }) }),
+  testNotification: () => request('/settings/test-notification', { method: 'POST', body: '{}' }),
 }
