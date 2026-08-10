@@ -16,6 +16,7 @@ from ..models import (
 from ..schemas import (
     BalanceOut,
     DepositCreate,
+    DepositDeleteOut,
     DepositOut,
     LotOut,
     TopUpQuoteItem,
@@ -23,6 +24,7 @@ from ..schemas import (
     TopUpQuoteRequest,
 )
 from ..services.cost_calculator import calculate_cost
+from ..services.bank_funds import delete_deposit_cascade
 
 router = APIRouter(prefix="/api/bank-card", tags=["bank-card"])
 
@@ -57,6 +59,22 @@ def create_deposit(payload: DepositCreate, db: Session = Depends(get_db)):
 @router.get("/deposits", response_model=list[DepositOut])
 def list_deposits(db: Session = Depends(get_db)):
     return db.scalars(select(BankCardDeposit).order_by(BankCardDeposit.created_at.desc())).all()
+
+
+@router.delete("/deposits/{deposit_id}", response_model=DepositDeleteOut)
+def delete_deposit(deposit_id: int, db: Session = Depends(get_db)):
+    try:
+        result = delete_deposit_cascade(db, deposit_id)
+        if result is None:
+            raise HTTPException(404, "Deposit not found")
+        db.commit()
+        return result
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.get("/lots", response_model=list[LotOut])
@@ -114,8 +132,15 @@ def list_transactions(
     transactions: list[dict] = []
     if type in ("all", "deposit"):
         deposits = db.scalars(select(BankCardDeposit)).all()
-        transactions.extend({
+        for item in deposits:
+            linked_charge_ids = db.scalars(
+                select(BankCardChargeAllocation.charge_id)
+                .where(BankCardChargeAllocation.deposit_id == item.id)
+            ).all()
+            used_usdt = round(item.actual_received - (item.remaining_usdt or 0), 4)
+            transactions.append({
             "id": f"deposit-{item.id}",
+            "deposit_id": item.id,
             "type": "deposit",
             "title": "C2C 充值",
             "usdt_delta": item.actual_received,
@@ -123,6 +148,8 @@ def list_transactions(
             "c2c_rate": item.c2c_rate,
             "balance_after": None,
             "created_at": item.created_at,
+            "used_usdt": used_usdt,
+            "related_charge_count": len(set(linked_charge_ids)),
             "details": {
                 "purchased_usdt": item.usdt_amount,
                 "chain_fee": item.chain_fee,
@@ -130,7 +157,7 @@ def list_transactions(
                 "remaining_usdt": item.remaining_usdt,
             },
             "allocations": [],
-        } for item in deposits)
+            })
     charge_kinds = []
     if type in ("all", "charge"):
         charge_kinds.append("subscription")

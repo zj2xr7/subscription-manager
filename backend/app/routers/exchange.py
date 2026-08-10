@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import AppSettings
+from ..schemas import ExchangeQuoteRequest
 from ..services.exchange_rate import exchange_rate_service
 
 router = APIRouter(prefix="/api/exchange", tags=["exchange"])
@@ -19,3 +20,8 @@ async def get_rates(base: str = Query("USD", pattern="^(USD|GBP|CAD|CNY)$"), db:
 async def get_cny_quotes(refresh: bool = False, db: Session = Depends(get_db)):
     setting = db.get(AppSettings, "exchange_rate_api_key")
     return await exchange_rate_service.cny_quotes(setting.value if setting else "", refresh=refresh)
+
+
+@router.post("/quotes")
+async def preview_cny_quotes(payload: ExchangeQuoteRequest):
+    return await exchange_rate_service.cny_quotes(payload.api_key.strip(), refresh=payload.refresh)

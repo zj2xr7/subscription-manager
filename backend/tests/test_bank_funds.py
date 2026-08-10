@@ -1,11 +1,18 @@
 import unittest
+from datetime import date, datetime
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import BankCardDeposit
-from app.services.bank_funds import allocate_fifo
+from app.models import (
+    BankCardBalance,
+    BankCardCharge,
+    BankCardChargeAllocation,
+    BankCardDeposit,
+    Subscription,
+)
+from app.services.bank_funds import allocate_fifo, delete_deposit_cascade
 
 
 class BankFundsTests(unittest.TestCase):
@@ -16,6 +23,7 @@ class BankFundsTests(unittest.TestCase):
         self.db.add_all([
             BankCardDeposit(usdt_amount=10.01, c2c_rate=6.5, cny_cost=65.07, chain_fee=.01, actual_received=10, remaining_usdt=10),
             BankCardDeposit(usdt_amount=10.01, c2c_rate=7, cny_cost=70.07, chain_fee=.01, actual_received=10, remaining_usdt=10),
+            BankCardBalance(id=1, balance=20),
         ])
         self.db.commit()
 
@@ -35,6 +43,59 @@ class BankFundsTests(unittest.TestCase):
         self.assertEqual(shortfall, 5)
         self.assertEqual(self.db.get(BankCardDeposit, 1).remaining_usdt, 0)
         self.assertEqual(self.db.get(BankCardDeposit, 2).remaining_usdt, 0)
+
+    def test_delete_unused_deposit_recomputes_balance(self):
+        result = delete_deposit_cascade(self.db, 1)
+        self.db.commit()
+        self.assertEqual(result["deleted_charge_count"], 0)
+        self.assertIsNone(self.db.get(BankCardDeposit, 1))
+        self.assertEqual(self.db.get(BankCardBalance, 1).balance, 10)
+
+    def test_delete_used_deposit_cascades_later_subscription_charges(self):
+        subscription = Subscription(
+            name="Service",
+            price=10,
+            currency="USD",
+            billing_cycle="monthly",
+            next_billing_date=date(2026, 3, 1),
+            payment_method="bank_card",
+        )
+        self.db.add(subscription)
+        self.db.flush()
+        first = BankCardCharge(
+            kind="subscription", subscription_id=subscription.id, subscription_name=subscription.name,
+            original_price=10, original_currency="USD", converted_usd=10, charged_usdt=8,
+            actual_cny_cost=52.5, balance_before=20, balance_after=12,
+            billing_date=date(2026, 1, 1), next_billing_date=date(2026, 2, 1),
+            created_at=datetime(2026, 1, 1),
+        )
+        second = BankCardCharge(
+            kind="subscription", subscription_id=subscription.id, subscription_name=subscription.name,
+            original_price=10, original_currency="USD", converted_usd=10, charged_usdt=4,
+            actual_cny_cost=28, balance_before=12, balance_after=8,
+            billing_date=date(2026, 2, 1), next_billing_date=date(2026, 3, 1),
+            created_at=datetime(2026, 2, 1),
+        )
+        self.db.add_all([first, second])
+        self.db.flush()
+        self.db.add_all([
+            BankCardChargeAllocation(charge_id=first.id, deposit_id=1, usdt_amount=7, c2c_rate=6.5, cny_cost=45.5),
+            BankCardChargeAllocation(charge_id=first.id, deposit_id=2, usdt_amount=1, c2c_rate=7, cny_cost=7),
+            BankCardChargeAllocation(charge_id=second.id, deposit_id=2, usdt_amount=4, c2c_rate=7, cny_cost=28),
+        ])
+        self.db.get(BankCardDeposit, 1).remaining_usdt = 3
+        self.db.get(BankCardDeposit, 2).remaining_usdt = 5
+        self.db.get(BankCardBalance, 1).balance = 8
+        self.db.commit()
+
+        result = delete_deposit_cascade(self.db, 1)
+        self.db.commit()
+        self.assertEqual(result["deleted_charge_count"], 2)
+        self.assertEqual(result["rolled_back_subscription_count"], 1)
+        self.assertEqual(self.db.get(BankCardDeposit, 2).remaining_usdt, 10)
+        self.assertEqual(self.db.get(BankCardBalance, 1).balance, 10)
+        self.assertEqual(self.db.get(Subscription, subscription.id).next_billing_date, date(2026, 1, 1))
+        self.assertEqual(self.db.query(BankCardCharge).count(), 0)
 
 
 if __name__ == "__main__":
