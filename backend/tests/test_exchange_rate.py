@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 
 from app.services.exchange_rate import ExchangeRateService
 
@@ -13,6 +14,12 @@ class FakeExchangeRateService(ExchangeRateService):
         self.calls.append((base, api_key))
         marker = 7.1 if api_key == "key-a" else 7.9
         return {"CNY": marker}, "api"
+
+
+class SlowExchangeRateService(ExchangeRateService):
+    async def _fetch(self, base: str, api_key: str):
+        await asyncio.sleep(0.02)
+        return {"CNY": 7.1}, "api"
 
 
 class ExchangeRateCacheTests(unittest.TestCase):
@@ -35,6 +42,13 @@ class ExchangeRateCacheTests(unittest.TestCase):
         asyncio.run(service.rates("USD", "key-b"))
         self.assertEqual(service.calls.count(("USD", "key-a")), 2)
         self.assertEqual(service.calls.count(("USD", "key-b")), 1)
+
+    def test_cache_can_be_used_from_multiple_event_loops(self):
+        service = SlowExchangeRateService()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(asyncio.run, service.rates("USD", "shared-key")) for _ in range(2)]
+            results = [future.result(timeout=2) for future in futures]
+        self.assertEqual([result["CNY"] for result in results], [7.1, 7.1])
 
 
 if __name__ == "__main__":

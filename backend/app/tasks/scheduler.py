@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -16,10 +17,11 @@ from ..models import (
 )
 from ..services.cost_calculator import calculate_cost
 from ..services.funding_queue import build_bank_funding_queue
-from ..services.notification import parse_notification_days, send_server_chan
+from ..services.notification import parse_notification_days, sanitize_notification_error, send_server_chan
 
 TIMEZONE = ZoneInfo("Asia/Shanghai")
 scheduler = BackgroundScheduler(timezone=TIMEZONE)
+run_lock = threading.Lock()
 
 
 def _setting(db, key: str, default: str = "") -> str:
@@ -129,7 +131,7 @@ async def check_due_subscriptions(is_startup: bool = False, today: date | None =
                     delivery.error_message = None if sent else "通知服务拒绝了本次请求"
                 except Exception as exc:
                     delivery.status = "failed"
-                    delivery.error_message = str(exc)[:500]
+                    delivery.error_message = sanitize_notification_error(exc)
                 if delivery.status == "sent":
                     state.sent_count += 1
                     item.last_notified_date = today
@@ -144,14 +146,19 @@ async def check_due_subscriptions(is_startup: bool = False, today: date | None =
             db.rollback()
             state = db.get(NotificationSchedulerState, 1) or NotificationSchedulerState(id=1)
             state.status = "failed"
-            state.error_message = str(exc)[:500]
+            state.error_message = sanitize_notification_error(exc, scheduler=True)
             state.last_completed_at = utcnow()
             db.add(state)
             db.commit()
 
 
 def run_check(is_startup: bool = False):
-    asyncio.run(check_due_subscriptions(is_startup=is_startup))
+    if not run_lock.acquire(blocking=False):
+        return
+    try:
+        asyncio.run(check_due_subscriptions(is_startup=is_startup))
+    finally:
+        run_lock.release()
 
 
 def start_scheduler():
