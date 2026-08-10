@@ -11,6 +11,7 @@ const request = async (path, options = {}) => {
 
 export const api = {
   subscriptions: () => request('/subscriptions'),
+  subscriptionCharges: (type = 'all') => request(`/subscriptions/charges?type=${type}`),
   createSubscription: data => request('/subscriptions', { method: 'POST', body: JSON.stringify(data) }),
   updateSubscription: (id, data) => request(`/subscriptions/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteSubscription: id => request(`/subscriptions/${id}`, { method: 'DELETE' }),

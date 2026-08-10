@@ -23,7 +23,7 @@ from ..schemas import (
     TopUpQuoteOut,
     TopUpQuoteRequest,
 )
-from ..services.bank_funds import delete_deposit_cascade
+from ..services.bank_funds import DepositAlreadyUsedError, delete_deposit_cascade
 from ..services.funding_queue import build_bank_funding_queue
 
 router = APIRouter(prefix="/api/bank-card", tags=["bank-card"])
@@ -72,6 +72,9 @@ def delete_deposit(deposit_id: int, db: Session = Depends(get_db)):
     except HTTPException:
         db.rollback()
         raise
+    except DepositAlreadyUsedError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
     except Exception:
         db.rollback()
         raise
@@ -153,6 +156,7 @@ def list_transactions(
             "created_at": item.created_at,
             "used_usdt": used_usdt,
             "related_charge_count": len(set(linked_charge_ids)),
+            "deletable": used_usdt <= 0.00005 and not linked_charge_ids,
             "details": {
                 "purchased_usdt": item.usdt_amount,
                 "chain_fee": item.chain_fee,

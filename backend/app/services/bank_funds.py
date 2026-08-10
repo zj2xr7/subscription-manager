@@ -5,10 +5,8 @@ from sqlalchemy.orm import Session
 
 from ..models import (
     BankCardBalance,
-    BankCardCharge,
     BankCardChargeAllocation,
     BankCardDeposit,
-    Subscription,
 )
 
 
@@ -24,6 +22,10 @@ class Allocation:
             "c2c_rate": round(self.deposit.c2c_rate, 4),
             "cny_cost": round(self.usdt_amount * self.deposit.c2c_rate, 2),
         }
+
+
+class DepositAlreadyUsedError(ValueError):
+    pass
 
 
 def available_lots(db: Session) -> list[BankCardDeposit]:
@@ -60,56 +62,10 @@ def delete_deposit_cascade(db: Session, deposit_id: int) -> dict | None:
         select(BankCardChargeAllocation.charge_id)
         .where(BankCardChargeAllocation.deposit_id == deposit_id)
     ).all())
-    affected_charges = [db.get(BankCardCharge, charge_id) for charge_id in direct_charge_ids]
-    affected_charges = [charge for charge in affected_charges if charge is not None]
+    used_usdt = round(deposit.actual_received - (deposit.remaining_usdt or 0), 4)
+    if used_usdt > 0.00005 or direct_charge_ids:
+        raise DepositAlreadyUsedError("Used deposit records are protected and cannot be deleted")
 
-    subscription_cutoffs: dict[int, object] = {}
-    for charge in affected_charges:
-        if charge.kind == "subscription" and charge.subscription_id is not None:
-            current = subscription_cutoffs.get(charge.subscription_id)
-            if current is None or charge.created_at < current:
-                subscription_cutoffs[charge.subscription_id] = charge.created_at
-
-    affected_ids = set(direct_charge_ids)
-    for subscription_id, cutoff in subscription_cutoffs.items():
-        affected_ids.update(db.scalars(
-            select(BankCardCharge.id).where(
-                BankCardCharge.subscription_id == subscription_id,
-                BankCardCharge.kind == "subscription",
-                BankCardCharge.created_at >= cutoff,
-            )
-        ).all())
-
-    charges = db.scalars(
-        select(BankCardCharge)
-        .where(BankCardCharge.id.in_(affected_ids))
-        .order_by(BankCardCharge.created_at)
-    ).all() if affected_ids else []
-    allocations = db.scalars(
-        select(BankCardChargeAllocation)
-        .where(BankCardChargeAllocation.charge_id.in_(affected_ids))
-        .order_by(BankCardChargeAllocation.id)
-    ).all() if affected_ids else []
-
-    for allocation in allocations:
-        source = db.get(BankCardDeposit, allocation.deposit_id)
-        if source is not None and source.id != deposit_id:
-            source.remaining_usdt = round((source.remaining_usdt or 0) + allocation.usdt_amount, 4)
-
-    rolled_back = 0
-    for subscription_id in subscription_cutoffs:
-        subscription = db.get(Subscription, subscription_id)
-        related = [charge for charge in charges if charge.subscription_id == subscription_id and charge.billing_date]
-        if subscription is not None and related:
-            subscription.next_billing_date = min(charge.billing_date for charge in related)
-            subscription.last_notified_date = None
-            rolled_back += 1
-
-    for allocation in allocations:
-        db.delete(allocation)
-    db.flush()
-    for charge in charges:
-        db.delete(charge)
     db.delete(deposit)
     db.flush()
 
@@ -119,7 +75,7 @@ def delete_deposit_cascade(db: Session, deposit_id: int) -> dict | None:
     db.flush()
     return {
         "deleted_deposit_id": deposit_id,
-        "deleted_charge_count": len(charges),
-        "rolled_back_subscription_count": rolled_back,
+        "deleted_charge_count": 0,
+        "rolled_back_subscription_count": 0,
         "balance": remaining_total,
     }
