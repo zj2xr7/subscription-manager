@@ -3,7 +3,14 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import AppSettings
-from ..schemas import SettingsOut, SettingsUpdate, TestNotificationRequest
+from ..schemas import (
+    ExchangeRateSettingsUpdate,
+    NotificationSettingsUpdate,
+    SettingsOut,
+    SettingsUpdate,
+    TestNotificationRequest,
+)
+from ..services.exchange_rate import exchange_rate_service
 from ..services.notification import send_server_chan
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -36,10 +43,42 @@ def update_settings(payload: SettingsUpdate, db: Session = Depends(get_db)):
     return as_output(db)
 
 
+@router.put("/notification", response_model=SettingsOut)
+def update_notification_settings(payload: NotificationSettingsUpdate, db: Session = Depends(get_db)):
+    values = {
+        "server_chan_key": payload.server_chan_key.strip(),
+        "notification_days_before": str(payload.notification_days_before),
+    }
+    for key, value in values.items():
+        row = db.get(AppSettings, key)
+        if row is None:
+            row = AppSettings(key=key)
+            db.add(row)
+        row.value = value
+    db.commit()
+    return as_output(db)
+
+
+@router.put("/exchange-rate")
+async def update_exchange_rate_settings(payload: ExchangeRateSettingsUpdate, db: Session = Depends(get_db)):
+    api_key = payload.exchange_rate_api_key.strip()
+    quotes = await exchange_rate_service.cny_quotes(api_key, refresh=True)
+    if api_key and quotes["source"] != "api":
+        raise HTTPException(422, "ExchangeRate API Key validation failed; the saved key was not changed")
+
+    row = db.get(AppSettings, "exchange_rate_api_key")
+    if row is None:
+        row = AppSettings(key="exchange_rate_api_key")
+        db.add(row)
+    row.value = api_key
+    db.commit()
+    return {"settings": as_output(db), "quotes": quotes}
+
+
 @router.post("/test-notification")
-async def test_notification(payload: TestNotificationRequest, db: Session = Depends(get_db)):
+async def test_notification(_payload: TestNotificationRequest, db: Session = Depends(get_db)):
     stored = db.get(AppSettings, "server_chan_key")
-    key = payload.server_chan_key or (stored.value if stored else "")
+    key = stored.value if stored else ""
     if not key:
         raise HTTPException(400, "ServerChan SendKey is required")
     try:

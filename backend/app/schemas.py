@@ -142,6 +142,15 @@ class SettingsUpdate(BaseModel):
     notification_days_before: int | None = Field(default=None, ge=0, le=90)
 
 
+class NotificationSettingsUpdate(BaseModel):
+    server_chan_key: str = ""
+    notification_days_before: int = Field(default=7, ge=0, le=90)
+
+
+class ExchangeRateSettingsUpdate(BaseModel):
+    exchange_rate_api_key: str = ""
+
+
 class TestNotificationRequest(BaseModel):
     server_chan_key: str | None = None
 
