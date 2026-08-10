@@ -21,6 +21,7 @@ export const api = {
   transactions: (type = 'all') => request(`/bank-card/transactions?type=${type}`),
   topUpQuote: data => request('/bank-card/top-up-quote', { method: 'POST', body: JSON.stringify(data) }),
   deposit: data => request('/bank-card/deposit', { method: 'POST', body: JSON.stringify(data) }),
+  deleteDeposit: id => request(`/bank-card/deposits/${id}`, { method: 'DELETE' }),
   exchangeQuotes: (refresh = false, apiKey = null) => apiKey === null
     ? request(`/exchange/quotes${refresh ? '?refresh=true' : ''}`)
     : request('/exchange/quotes', { method: 'POST', body: JSON.stringify({ api_key: apiKey, refresh }) }),

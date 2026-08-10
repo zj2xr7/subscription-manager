@@ -79,6 +79,13 @@ class DepositOut(BaseModel):
     created_at: datetime
 
 
+class DepositDeleteOut(BaseModel):
+    deleted_deposit_id: int
+    deleted_charge_count: int
+    rolled_back_subscription_count: int
+    balance: float
+
+
 class AllocationOut(BaseModel):
     deposit_id: int
     usdt_amount: float
