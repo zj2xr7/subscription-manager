@@ -77,7 +77,7 @@ def notification_overview(db: Session = Depends(get_db)):
                 "scheduled_for": scheduled_for,
             })
     reminders.sort(key=lambda item: (
-        -item["lead_days"], item["scheduled_for"], item["billing_date"], item["subscription_id"]
+        item["scheduled_for"], item["billing_date"], item["subscription_id"], -item["lead_days"]
     ))
     enabled = bool(send_key and send_key.value)
     state_status = state.status if state else "never"
