@@ -55,6 +55,9 @@ class CostBreakdown(BaseModel):
     queue_position: int | None = None
     reserved_before_usdt: float | None = None
     available_for_charge_usdt: float | None = None
+    estimated_cny_cost: float | None = None
+    estimate_cny_rate: float | None = None
+    estimate_source: Literal["fifo", "api", "reference"] | None = None
 
 
 class SubscriptionOut(SubscriptionBase):
@@ -111,6 +114,22 @@ class ChargeOut(BaseModel):
     balance: float
     next_billing_date: date
     allocations: list[AllocationOut]
+
+
+class SubscriptionChargeRecordOut(BaseModel):
+    id: str
+    payment_method: PaymentMethod
+    subscription_id: int | None
+    subscription_name: str
+    original_price: float
+    original_currency: Currency
+    conversion_rate: float | None = None
+    cny_cost: float
+    charged_usdt: float | None = None
+    billing_date: date
+    next_billing_date: date
+    created_at: datetime
+    allocations: list[AllocationOut] = Field(default_factory=list)
 
 
 class TopUpQuoteRequest(BaseModel):

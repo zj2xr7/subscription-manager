@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from ..models import Subscription
 from .bank_funds import Allocation, available_lots
 from .cost_calculator import calculate_cost
+from .exchange_rate import exchange_rate_service
 
 
 @dataclass
@@ -63,7 +64,12 @@ async def build_bank_funding_queue(db: Session, api_key: str = "") -> tuple[list
         costs[item.id] = cost
         requirements.append((item.id, float(cost["required_usdt"])))
 
+    if not subscriptions:
+        return subscriptions, {}
+
     funding = simulate_funding_queue(available_lots(db), requirements)
+    estimate_quotes = await exchange_rate_service.cny_quotes(api_key)
+    estimate_rate = float(estimate_quotes["quotes"]["USD"])
     results = {}
     for item in subscriptions:
         cost = costs[item.id]
@@ -71,6 +77,9 @@ async def build_bank_funding_queue(db: Session, api_key: str = "") -> tuple[list
         allocations = [allocation.as_dict() for allocation in queued.allocations]
         covered_cost = round(sum(allocation.usdt_amount * allocation.deposit.c2c_rate for allocation in queued.allocations), 2)
         status = "sufficient" if queued.shortfall_usdt == 0 else ("partial" if queued.covered_usdt > 0 else "empty")
+        estimated_cost = covered_cost if status == "sufficient" else round(
+            covered_cost + queued.shortfall_usdt * estimate_rate, 2
+        )
         results[item.id] = {
             **cost,
             "queue_position": queued.queue_position,
@@ -82,6 +91,9 @@ async def build_bank_funding_queue(db: Session, api_key: str = "") -> tuple[list
             "coverage_status": status,
             "allocations": allocations,
             "cny_cost": covered_cost if status == "sufficient" else None,
+            "estimated_cny_cost": estimated_cost,
+            "estimate_cny_rate": None if status == "sufficient" else estimate_rate,
+            "estimate_source": "fifo" if status == "sufficient" else estimate_quotes["source"],
             "formula": " + ".join(
                 f"{allocation.usdt_amount:.4f} × ¥{allocation.deposit.c2c_rate:.4f}"
                 for allocation in queued.allocations

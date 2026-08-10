@@ -12,7 +12,7 @@ from app.models import (
     BankCardDeposit,
     Subscription,
 )
-from app.services.bank_funds import allocate_fifo, delete_deposit_cascade
+from app.services.bank_funds import DepositAlreadyUsedError, allocate_fifo, delete_deposit_cascade
 
 
 class BankFundsTests(unittest.TestCase):
@@ -51,7 +51,7 @@ class BankFundsTests(unittest.TestCase):
         self.assertIsNone(self.db.get(BankCardDeposit, 1))
         self.assertEqual(self.db.get(BankCardBalance, 1).balance, 10)
 
-    def test_delete_used_deposit_cascades_later_subscription_charges(self):
+    def test_delete_used_deposit_is_rejected_without_changing_history(self):
         subscription = Subscription(
             name="Service",
             price=10,
@@ -88,14 +88,37 @@ class BankFundsTests(unittest.TestCase):
         self.db.get(BankCardBalance, 1).balance = 8
         self.db.commit()
 
-        result = delete_deposit_cascade(self.db, 1)
+        with self.assertRaises(DepositAlreadyUsedError):
+            delete_deposit_cascade(self.db, 1)
+        self.db.rollback()
+        self.assertIsNotNone(self.db.get(BankCardDeposit, 1))
+        self.assertEqual(self.db.get(BankCardDeposit, 2).remaining_usdt, 5)
+        self.assertEqual(self.db.get(BankCardBalance, 1).balance, 8)
+        self.assertEqual(self.db.get(Subscription, subscription.id).next_billing_date, date(2026, 3, 1))
+        self.assertEqual(self.db.query(BankCardCharge).count(), 2)
+        self.assertEqual(self.db.query(BankCardChargeAllocation).count(), 3)
+
+    def test_partially_used_deposit_without_allocation_is_protected(self):
+        self.db.get(BankCardDeposit, 1).remaining_usdt = 9
         self.db.commit()
-        self.assertEqual(result["deleted_charge_count"], 2)
-        self.assertEqual(result["rolled_back_subscription_count"], 1)
-        self.assertEqual(self.db.get(BankCardDeposit, 2).remaining_usdt, 10)
-        self.assertEqual(self.db.get(BankCardBalance, 1).balance, 10)
-        self.assertEqual(self.db.get(Subscription, subscription.id).next_billing_date, date(2026, 1, 1))
-        self.assertEqual(self.db.query(BankCardCharge).count(), 0)
+        with self.assertRaises(DepositAlreadyUsedError):
+            delete_deposit_cascade(self.db, 1)
+        self.db.rollback()
+        self.assertIsNotNone(self.db.get(BankCardDeposit, 1))
+
+    def test_historical_adjustment_allocation_protects_deposit(self):
+        charge = BankCardCharge(
+            kind="historical_adjustment", subscription_name="Historical balance adjustment",
+            charged_usdt=1, actual_cny_cost=6.5, balance_before=20, balance_after=19,
+        )
+        self.db.add(charge)
+        self.db.flush()
+        self.db.add(BankCardChargeAllocation(
+            charge_id=charge.id, deposit_id=1, usdt_amount=1, c2c_rate=6.5, cny_cost=6.5,
+        ))
+        self.db.commit()
+        with self.assertRaises(DepositAlreadyUsedError):
+            delete_deposit_cascade(self.db, 1)
 
 
 if __name__ == "__main__":

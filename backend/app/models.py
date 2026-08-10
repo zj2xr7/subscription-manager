@@ -76,6 +76,23 @@ class BankCardChargeAllocation(Base):
     cny_cost: Mapped[float] = mapped_column(Float, nullable=False)
 
 
+class AlipayCharge(Base):
+    __tablename__ = "alipay_charges"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subscription_id: Mapped[int | None] = mapped_column(
+        ForeignKey("subscriptions.id", ondelete="SET NULL"), nullable=True
+    )
+    subscription_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    original_price: Mapped[float] = mapped_column(Float, nullable=False)
+    original_currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    conversion_rate: Mapped[float] = mapped_column(Float, nullable=False)
+    actual_cny_cost: Mapped[float] = mapped_column(Float, nullable=False)
+    billing_date: Mapped[date] = mapped_column(Date, nullable=False)
+    next_billing_date: Mapped[date] = mapped_column(Date, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class BankCardBalance(Base):
     __tablename__ = "bank_card_balance"
 

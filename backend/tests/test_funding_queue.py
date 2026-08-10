@@ -83,6 +83,25 @@ class FundingQueueIntegrationTests(unittest.TestCase):
         self.assertEqual(quote.covered_usdt, 4.94)
         self.assertEqual(quote.shortfall_usdt, 1.24)
 
+    def test_partial_coverage_has_full_reference_estimate_without_actual_cost(self):
+        _, funding = asyncio.run(build_bank_funding_queue(self.db))
+        cost = funding[self.chatgpt.id]
+        self.assertIsNone(cost["cny_cost"])
+        self.assertEqual(cost["covered_cny_cost"], 34.58)
+        self.assertEqual(cost["estimated_cny_cost"], 43.51)
+        self.assertEqual(cost["estimate_cny_rate"], 7.2)
+        self.assertEqual(cost["estimate_source"], "reference")
+
+    def test_zero_balance_still_has_complete_estimated_cost(self):
+        self.db.get(BankCardDeposit, 1).remaining_usdt = 0
+        self.db.get(BankCardBalance, 1).balance = 0
+        self.db.commit()
+        _, funding = asyncio.run(build_bank_funding_queue(self.db))
+        cost = funding[self.webshare.id]
+        self.assertEqual(cost["covered_usdt"], 0)
+        self.assertEqual(cost["estimated_cny_cost"], 14.83)
+        self.assertEqual(cost["estimate_source"], "reference")
+
     def test_paid_subscription_reenters_queue_at_its_new_date(self):
         self.db.get(BankCardDeposit, 1).remaining_usdt = 20
         self.db.get(BankCardDeposit, 1).actual_received = 20
