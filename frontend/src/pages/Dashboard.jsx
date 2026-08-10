@@ -1,4 +1,6 @@
 import StatCard from '../components/StatCard'
+import NotificationOverview from '../components/NotificationOverview'
+import PaymentHistory from '../components/PaymentHistory'
 
 const timeGreeting = hour => {
   if (hour < 5) return '夜深了，订阅支出依然一目了然。'
@@ -7,16 +9,16 @@ const timeGreeting = hour => {
   return '晚上好，今天的订阅成本都在这里。'
 }
 
-export default function Dashboard({ subscriptions, balance, loading, onNavigate }) {
+export default function Dashboard({ subscriptions, charges, notifications, balance, loading, onNavigate }) {
   const now = new Date()
   const actualCost = item => item.cost?.cny_cost
   const complete = subscriptions.filter(item => actualCost(item) != null)
-  const incompleteCount = subscriptions.length - complete.length
   const monthly = item => item.billing_cycle === 'yearly' ? actualCost(item) / 12 : item.billing_cycle === 'custom' ? actualCost(item) * 30 / item.custom_days : actualCost(item)
   const monthCost = complete.reduce((sum, item) => sum + monthly(item), 0)
   const annualCost = monthCost * 12
   const alipay = complete.filter(item => item.payment_method === 'alipay').reduce((sum, item) => sum + actualCost(item), 0)
   const bank = complete.filter(item => item.payment_method === 'bank_card').reduce((sum, item) => sum + actualCost(item), 0)
+  const incompleteCount = subscriptions.filter(item => item.payment_method === 'bank_card' && item.cost?.coverage_status !== 'sufficient').length
   const upcoming = subscriptions.filter(item => { const days = (new Date(`${item.next_billing_date}T00:00:00`) - now) / 86400000; return days >= -1 && days <= 7 }).slice(0, 5)
   return <main>
     <div className="hero"><div><p className="eyebrow">OVERVIEW</p><h1>{timeGreeting(now.getHours())}</h1><p>一站式掌握所有订阅与支付成本。</p></div><button className="primary" onClick={() => onNavigate('subscriptions')}>＋ 添加订阅</button></div>
@@ -32,5 +34,7 @@ export default function Dashboard({ subscriptions, balance, loading, onNavigate 
       </article>
       <article className="panel balance-panel"><p className="eyebrow">BANK CARD</p><h2>USDT 余额</h2><div className="balance-orbit"><span>₮</span><strong>{balance.toFixed(2)}</strong><small>USDT</small></div><div className="balance-warning" data-ok={incompleteCount === 0}>{incompleteCount ? `${incompleteCount} 项订阅余额不足` : '余额可覆盖当前银行卡订阅'}</div><button className="secondary full" onClick={() => onNavigate('bank-card')}>管理银行卡余额</button></article>
     </section>
+    <NotificationOverview data={notifications} />
+    <PaymentHistory items={charges || []} />
   </main>
 }
