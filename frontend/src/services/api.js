@@ -1,0 +1,28 @@
+const request = async (path, options = {}) => {
+  const response = await fetch(`/api${path}`, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...options.headers },
+  })
+  if (response.status === 204) return null
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(body.detail || '请求失败，请稍后重试')
+  return body
+}
+
+export const api = {
+  subscriptions: () => request('/subscriptions'),
+  createSubscription: data => request('/subscriptions', { method: 'POST', body: JSON.stringify(data) }),
+  updateSubscription: (id, data) => request(`/subscriptions/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteSubscription: id => request(`/subscriptions/${id}`, { method: 'DELETE' }),
+  chargeSubscription: id => request(`/subscriptions/${id}/charge`, { method: 'POST' }),
+  balance: () => request('/bank-card/balance'),
+  deposits: () => request('/bank-card/deposits'),
+  lots: () => request('/bank-card/lots'),
+  transactions: (type = 'all') => request(`/bank-card/transactions?type=${type}`),
+  topUpQuote: data => request('/bank-card/top-up-quote', { method: 'POST', body: JSON.stringify(data) }),
+  deposit: data => request('/bank-card/deposit', { method: 'POST', body: JSON.stringify(data) }),
+  exchangeQuotes: (refresh = false) => request(`/exchange/quotes${refresh ? '?refresh=true' : ''}`),
+  settings: () => request('/settings'),
+  saveSettings: data => request('/settings', { method: 'PUT', body: JSON.stringify(data) }),
+  testNotification: server_chan_key => request('/settings/test-notification', { method: 'POST', body: JSON.stringify({ server_chan_key }) }),
+}

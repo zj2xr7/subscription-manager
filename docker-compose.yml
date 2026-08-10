@@ -1,0 +1,14 @@
+services:
+  submanager:
+    build: .
+    container_name: submanager
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: sqlite:////app/backend/data/submanager.db
+    volumes:
+      - ./data:/app/backend/data
+    restart: unless-stopped
