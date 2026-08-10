@@ -94,7 +94,7 @@ class NotificationSchedulerTests(unittest.TestCase):
         self.assertNotIn(7, [item["lead_days"] for item in result["next_reminders"]])
         self.assertIn(3, [item["lead_days"] for item in result["next_reminders"]])
 
-    def test_next_reminders_are_grouped_by_lead_days_descending(self):
+    def test_next_reminders_are_ordered_by_scheduled_date(self):
         today = date.today()
         with Session(self.engine) as db:
             first = db.scalar(select(Subscription))
@@ -106,12 +106,11 @@ class NotificationSchedulerTests(unittest.TestCase):
             db.commit()
             result = notification_overview(db)
         reminders = result["next_reminders"]
-        self.assertEqual([item["lead_days"] for item in reminders], [7, 7, 3, 3, 1, 1])
-        seven_day_items = [item for item in reminders if item["lead_days"] == 7]
         self.assertEqual(
-            [item["scheduled_for"] for item in seven_day_items],
-            sorted(item["scheduled_for"] for item in seven_day_items),
+            [item["scheduled_for"] for item in reminders],
+            sorted(item["scheduled_for"] for item in reminders),
         )
+        self.assertEqual([item["lead_days"] for item in reminders], [7, 7, 3, 1, 3, 1])
 
     def test_health_mapping_is_consistent(self):
         self.assertEqual(notification_health(False, True, "success")[0], "disabled")
@@ -174,7 +173,7 @@ class NotificationMigrationTests(unittest.TestCase):
                 init_db()
             with Factory() as db:
                 self.assertEqual(json.loads(db.get(AppSettings, "notification_days_before").value), [7])
-                self.assertEqual(db.get(AppSettings, "schema_version").value, "4")
+                self.assertEqual(db.get(AppSettings, "schema_version").value, "5")
                 deliveries = db.query(NotificationDelivery).all()
                 self.assertEqual(len(deliveries), 2)
                 legacy = next(item for item in deliveries if item.subscription_name == "Legacy Service")

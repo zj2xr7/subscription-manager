@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import DepositForm from '../components/DepositForm'
 
-const filters = [['all', '全部'], ['deposit', '充值'], ['charge', '订阅扣款'], ['adjustment', '历史调整']]
+const filters = [['all', '全部'], ['deposit', '充值'], ['charge', '订阅扣款']]
 
 export default function BankCard({ balance, lots, transactions, subscriptions, onQuote, onDeposit, onDeleteDeposit }) {
   const [filter, setFilter] = useState('all')
