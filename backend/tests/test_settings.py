@@ -84,6 +84,18 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(delivery.status, "sent")
         self.assertEqual(sender.await_args.args[0], "saved-send-key")
 
+    def test_notification_test_sanitizes_provider_failure(self):
+        raw_error = Exception("400 Bad Request https://sctapi.ftqq.com/SECRET.send")
+        with patch("app.routers.settings.send_server_chan", new=AsyncMock(side_effect=raw_error)):
+            with self.assertRaises(HTTPException) as raised:
+                asyncio.run(test_notification(TestNotificationRequest(), self.db))
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertNotIn("http", str(raised.exception.detail).lower())
+        self.assertNotIn("SECRET", str(raised.exception.detail))
+        delivery = self.db.query(NotificationDelivery).order_by(NotificationDelivery.id.desc()).first()
+        self.assertNotIn("http", delivery.error_message.lower())
+        self.assertNotIn("SECRET", delivery.error_message)
+
 
 if __name__ == "__main__":
     unittest.main()

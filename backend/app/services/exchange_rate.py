@@ -1,5 +1,5 @@
-import asyncio
 import hashlib
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -17,7 +17,7 @@ FALLBACK_RATES = {
 class ExchangeRateService:
     def __init__(self):
         self._cache: dict[tuple[str, str], tuple[float, dict[str, float], str]] = {}
-        self._lock = asyncio.Lock()
+        self._lock = threading.RLock()
 
     @staticmethod
     def _key_id(api_key: str) -> str:
@@ -26,14 +26,15 @@ class ExchangeRateService:
     async def rates(self, base: str, api_key: str = "") -> dict[str, float]:
         base = base.upper()
         cache_key = (base, self._key_id(api_key))
-        cached = self._cache.get(cache_key)
+        with self._lock:
+            cached = self._cache.get(cache_key)
         if cached and time.time() - cached[0] < 3600:
             return cached[1]
-        async with self._lock:
+        rates, source = await self._fetch(base, api_key)
+        with self._lock:
             cached = self._cache.get(cache_key)
             if cached and time.time() - cached[0] < 3600:
                 return cached[1]
-            rates, source = await self._fetch(base, api_key)
             self._cache[cache_key] = (time.time(), rates, source)
             return rates
 
@@ -54,11 +55,12 @@ class ExchangeRateService:
             return FALLBACK_RATES[base].copy(), "reference"
 
     def invalidate(self, api_key: str | None = None):
-        if api_key is None:
-            self._cache.clear()
-            return
-        key_id = self._key_id(api_key)
-        self._cache = {key: value for key, value in self._cache.items() if key[1] != key_id}
+        with self._lock:
+            if api_key is None:
+                self._cache.clear()
+                return
+            key_id = self._key_id(api_key)
+            self._cache = {key: value for key, value in self._cache.items() if key[1] != key_id}
 
     async def cny_quotes(self, api_key: str = "", refresh: bool = False) -> dict:
         if refresh:
@@ -70,7 +72,8 @@ class ExchangeRateService:
         for currency in ("USD", "GBP", "CAD"):
             rates = await self.rates(currency, api_key)
             quotes[currency] = round(rates["CNY"], 4)
-            cached = self._cache[(currency, key_id)]
+            with self._lock:
+                cached = self._cache[(currency, key_id)]
             timestamps.append(cached[0])
             sources.append(cached[2])
         updated = datetime.fromtimestamp(max(timestamps), tz=timezone.utc).isoformat()

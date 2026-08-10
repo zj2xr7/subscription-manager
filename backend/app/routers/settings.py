@@ -13,8 +13,7 @@ from ..schemas import (
     TestNotificationRequest,
 )
 from ..services.exchange_rate import exchange_rate_service
-from ..services.notification import send_server_chan
-from ..services.notification import parse_notification_days
+from ..services.notification import parse_notification_days, sanitize_notification_error, send_server_chan
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 KEYS = ("server_chan_key", "exchange_rate_api_key", "notification_days_before")
@@ -95,10 +94,10 @@ async def test_notification(_payload: TestNotificationRequest, db: Session = Dep
         delivery.error_message = None if sent else "通知服务拒绝了本次请求"
     except Exception as exc:
         delivery.status = "failed"
-        delivery.error_message = str(exc)[:500]
+        delivery.error_message = sanitize_notification_error(exc)
         db.commit()
-        raise HTTPException(502, f"Notification provider error: {exc}") from exc
+        raise HTTPException(502, delivery.error_message) from exc
     db.commit()
     if not sent:
-        raise HTTPException(502, "Notification provider rejected the request")
+        raise HTTPException(502, delivery.error_message)
     return {"sent": True, "delivery_id": delivery.id, "status": delivery.status}

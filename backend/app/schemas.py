@@ -254,6 +254,8 @@ class NotificationSchedulerStateOut(BaseModel):
 
 class NotificationOverviewOut(BaseModel):
     enabled: bool
+    health: Literal["disabled", "waiting", "checking", "healthy", "degraded", "stopped"]
+    health_message: str
     notification_days_before: list[int]
     scheduler: NotificationSchedulerStateOut
     next_reminders: list[NotificationNextOut]

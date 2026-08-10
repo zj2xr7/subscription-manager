@@ -132,4 +132,23 @@ def init_db():
                         attempted_at=datetime.combine(item.last_notified_date, time(hour=1)),
                     ))
             version.value = "3"
+        db.flush()
+        version = db.get(models.AppSettings, "schema_version")
+        if version is None or int(version.value or 0) < 4:
+            from .services.notification import sanitize_notification_error
+
+            state = db.get(models.NotificationSchedulerState, 1)
+            if state and state.error_message:
+                lowered = state.error_message.lower()
+                if "different event loop" in lowered or "asyncio" in lowered:
+                    state.status = "never"
+                    state.error_message = None
+                    state.due_count = state.sent_count = state.failed_count = 0
+                else:
+                    state.error_message = sanitize_notification_error(state.error_message, scheduler=True)
+            for delivery in db.scalars(
+                select(models.NotificationDelivery).where(models.NotificationDelivery.error_message.is_not(None))
+            ).all():
+                delivery.error_message = sanitize_notification_error(delivery.error_message)
+            version.value = "4"
         db.commit()
