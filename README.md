@@ -1,5 +1,8 @@
 # SubManager
 
+[![Test and publish Docker image](https://github.com/zj2xr7/SubManager/actions/workflows/docker.yml/badge.svg?branch=main)](https://github.com/zj2xr7/SubManager/actions/workflows/docker.yml)
+[![GHCR](https://img.shields.io/badge/GHCR-ghcr.io%2Fzj2xr7%2Fsubmanager-blue?logo=docker)](https://github.com/zj2xr7/SubManager/pkgs/container/submanager)
+
 SubManager 是一个本地优先的单用户订阅管理工具，统一核算支付宝与 USDT 银行卡两条支付链路的人民币成本，并提供 C2C 充值、余额管理和 Server 酱到期提醒。
 
 ## 功能
@@ -33,8 +36,9 @@ API 文档位于 <http://127.0.0.1:8000/docs>。
 
 ```powershell
 cd frontend
-npm install
-npm run dev
+corepack enable
+pnpm install --frozen-lockfile
+pnpm run dev
 ```
 
 打开 <http://127.0.0.1:5173>，Vite 会把 `/api` 转发到后端。
@@ -51,12 +55,34 @@ npm run dev
 
 ## Docker
 
+### 使用预构建镜像
+
 ```powershell
-Copy-Item .env.example .env
-docker compose up --build
+docker pull ghcr.io/zj2xr7/submanager:latest
+docker run -d --name submanager --restart unless-stopped `
+  -p 8000:8000 `
+  -v submanager-data:/app/backend/data `
+  ghcr.io/zj2xr7/submanager:latest
 ```
 
-访问 <http://127.0.0.1:8000>。SQLite 数据持久化在根目录 `data/` 中。
+访问 <http://127.0.0.1:8000>。容器内 SQLite 数据保存在 `/app/backend/data`，请始终挂载数据卷。
+
+### Docker Compose
+
+```powershell
+Copy-Item .env.example .env
+docker compose pull
+docker compose up -d
+```
+
+Compose 默认使用 `ghcr.io/zj2xr7/submanager:latest`，SQLite 数据持久化在根目录 `data/` 中。本地修改后可运行 `docker compose up -d --build` 覆盖构建。
+
+镜像标签：
+
+- `latest`、`main`：`main` 稳定分支
+- `develop`：开发分支
+- `1.0.0`、`1.0`、`1`：版本发布
+- `sha-<commit>`：精确提交
 
 ## 测试与构建
 
@@ -65,8 +91,10 @@ cd backend
 python -m unittest discover -s tests -v
 
 cd ..\frontend
-npm run build
+pnpm run build
 ```
+
+GitHub Actions 会在 Pull Request 中执行测试与 Docker 健康检查；推送 `main`、`develop` 或 `v*` 标签时，还会把 `linux/amd64` 镜像发布到 GHCR。
 
 ## Git 分支约定
 
@@ -74,3 +102,7 @@ npm run build
 - `develop`：日常开发主线
 - `feature/*`：从 `develop` 创建并合并回 `develop`
 - `hotfix/*`：从 `main` 创建并合并回 `main` 与 `develop`
+
+## License
+
+[MIT](LICENSE) © 2026 zj2xr7
