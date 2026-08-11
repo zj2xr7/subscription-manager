@@ -11,6 +11,7 @@ const request = async (path, options = {}) => {
 
 export const api = {
   subscriptions: () => request('/subscriptions'),
+  subscriptionCharges: (type = 'all') => request(`/subscriptions/charges?type=${type}`),
   createSubscription: data => request('/subscriptions', { method: 'POST', body: JSON.stringify(data) }),
   updateSubscription: (id, data) => request(`/subscriptions/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteSubscription: id => request(`/subscriptions/${id}`, { method: 'DELETE' }),
@@ -21,8 +22,14 @@ export const api = {
   transactions: (type = 'all') => request(`/bank-card/transactions?type=${type}`),
   topUpQuote: data => request('/bank-card/top-up-quote', { method: 'POST', body: JSON.stringify(data) }),
   deposit: data => request('/bank-card/deposit', { method: 'POST', body: JSON.stringify(data) }),
-  exchangeQuotes: (refresh = false) => request(`/exchange/quotes${refresh ? '?refresh=true' : ''}`),
+  deleteDeposit: id => request(`/bank-card/deposits/${id}`, { method: 'DELETE' }),
+  exchangeQuotes: (refresh = false, apiKey = null) => apiKey === null
+    ? request(`/exchange/quotes${refresh ? '?refresh=true' : ''}`)
+    : request('/exchange/quotes', { method: 'POST', body: JSON.stringify({ api_key: apiKey, refresh }) }),
   settings: () => request('/settings'),
+  notificationOverview: () => request('/notifications/overview'),
   saveSettings: data => request('/settings', { method: 'PUT', body: JSON.stringify(data) }),
-  testNotification: server_chan_key => request('/settings/test-notification', { method: 'POST', body: JSON.stringify({ server_chan_key }) }),
+  saveNotificationSettings: data => request('/settings/notification', { method: 'PUT', body: JSON.stringify(data) }),
+  saveExchangeRateSettings: exchange_rate_api_key => request('/settings/exchange-rate', { method: 'PUT', body: JSON.stringify({ exchange_rate_api_key }) }),
+  testNotification: () => request('/settings/test-notification', { method: 'POST', body: '{}' }),
 }

@@ -1,5 +1,6 @@
 services:
   submanager:
+    image: ${SUBMANAGER_IMAGE:-ghcr.io/zj2xr7/submanager:latest}
     build: .
     container_name: submanager
     ports:

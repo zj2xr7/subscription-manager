@@ -16,13 +16,15 @@ from ..models import (
 from ..schemas import (
     BalanceOut,
     DepositCreate,
+    DepositDeleteOut,
     DepositOut,
     LotOut,
     TopUpQuoteItem,
     TopUpQuoteOut,
     TopUpQuoteRequest,
 )
-from ..services.cost_calculator import calculate_cost
+from ..services.bank_funds import DepositAlreadyUsedError, delete_deposit_cascade
+from ..services.funding_queue import build_bank_funding_queue
 
 router = APIRouter(prefix="/api/bank-card", tags=["bank-card"])
 
@@ -59,6 +61,25 @@ def list_deposits(db: Session = Depends(get_db)):
     return db.scalars(select(BankCardDeposit).order_by(BankCardDeposit.created_at.desc())).all()
 
 
+@router.delete("/deposits/{deposit_id}", response_model=DepositDeleteOut)
+def delete_deposit(deposit_id: int, db: Session = Depends(get_db)):
+    try:
+        result = delete_deposit_cascade(db, deposit_id)
+        if result is None:
+            raise HTTPException(404, "Deposit not found")
+        db.commit()
+        return result
+    except HTTPException:
+        db.rollback()
+        raise
+    except DepositAlreadyUsedError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+
 @router.get("/lots", response_model=list[LotOut])
 def list_lots(db: Session = Depends(get_db)):
     return db.scalars(
@@ -70,36 +91,39 @@ def list_lots(db: Session = Depends(get_db)):
 
 @router.post("/top-up-quote", response_model=TopUpQuoteOut)
 async def top_up_quote(payload: TopUpQuoteRequest, db: Session = Depends(get_db)):
-    key = db.get(AppSettings, "exchange_rate_api_key")
-    api_key = key.value if key else ""
-    items: list[TopUpQuoteItem] = []
-    for subscription_id in payload.subscription_ids:
+    selected_ids = set(payload.subscription_ids)
+    for subscription_id in selected_ids:
         subscription = db.get(Subscription, subscription_id)
         if subscription is None:
             raise HTTPException(404, f"Subscription {subscription_id} not found")
         if subscription.payment_method != "bank_card":
             raise HTTPException(422, f"Subscription {subscription_id} is not a bank-card subscription")
-        cost = await calculate_cost(
-            subscription.price,
-            subscription.currency,
-            subscription.payment_method,
-            None,
-            api_key,
-        )
-        items.append(TopUpQuoteItem(
-            subscription_id=subscription.id,
-            name=subscription.name,
-            required_usdt=float(cost["required_usdt"]),
-        ))
+
+    key = db.get(AppSettings, "exchange_rate_api_key")
+    ordered, funding = await build_bank_funding_queue(db, key.value if key else "")
+    selected = [item for item in ordered if item.id in selected_ids]
+    items = [TopUpQuoteItem(
+        subscription_id=item.id,
+        name=item.name,
+        required_usdt=float(funding[item.id]["required_usdt"]),
+    ) for item in selected]
     required = round(sum(item.required_usdt for item in items), 4)
+    covered = round(sum(funding[item.id]["covered_usdt"] for item in selected), 4)
+    shortfall = round(sum(funding[item.id]["shortfall_usdt"] for item in selected), 4)
+    last_position = max((funding[item.id]["queue_position"] for item in selected), default=0)
+    reserved = round(sum(
+        funding[item.id]["covered_usdt"] for item in ordered
+        if item.id not in selected_ids and funding[item.id]["queue_position"] <= last_position
+    ), 4)
     balance = db.get(BankCardBalance, 1).balance
-    shortfall = round(max(required - balance, 0), 4)
     purchase = round(shortfall + 0.01, 4) if shortfall > 0 else 0
     suggested_cny = math.ceil(purchase * payload.c2c_rate * 100 - 1e-9) / 100 if purchase else 0
     return TopUpQuoteOut(
         items=items,
         required_usdt=required,
         available_usdt=balance,
+        reserved_usdt=reserved,
+        covered_usdt=covered,
         shortfall_usdt=shortfall,
         suggested_purchase_usdt=purchase,
         suggested_cny_amount=suggested_cny,
@@ -108,14 +132,21 @@ async def top_up_quote(payload: TopUpQuoteRequest, db: Session = Depends(get_db)
 
 @router.get("/transactions")
 def list_transactions(
-    type: str = Query("all", pattern="^(all|deposit|charge|adjustment)$"),
+    type: str = Query("all", pattern="^(all|deposit|charge)$"),
     db: Session = Depends(get_db),
 ):
     transactions: list[dict] = []
     if type in ("all", "deposit"):
         deposits = db.scalars(select(BankCardDeposit)).all()
-        transactions.extend({
+        for item in deposits:
+            linked_charge_ids = db.scalars(
+                select(BankCardChargeAllocation.charge_id)
+                .where(BankCardChargeAllocation.deposit_id == item.id)
+            ).all()
+            used_usdt = round(item.actual_received - (item.remaining_usdt or 0), 4)
+            transactions.append({
             "id": f"deposit-{item.id}",
+            "deposit_id": item.id,
             "type": "deposit",
             "title": "C2C 充值",
             "usdt_delta": item.actual_received,
@@ -123,6 +154,9 @@ def list_transactions(
             "c2c_rate": item.c2c_rate,
             "balance_after": None,
             "created_at": item.created_at,
+            "used_usdt": used_usdt,
+            "related_charge_count": len(set(linked_charge_ids)),
+            "deletable": used_usdt <= 0.00005 and not linked_charge_ids,
             "details": {
                 "purchased_usdt": item.usdt_amount,
                 "chain_fee": item.chain_fee,
@@ -130,15 +164,10 @@ def list_transactions(
                 "remaining_usdt": item.remaining_usdt,
             },
             "allocations": [],
-        } for item in deposits)
-    charge_kinds = []
+            })
     if type in ("all", "charge"):
-        charge_kinds.append("subscription")
-    if type in ("all", "adjustment"):
-        charge_kinds.append("historical_adjustment")
-    if charge_kinds:
         charges = db.scalars(
-            select(BankCardCharge).where(BankCardCharge.kind.in_(charge_kinds))
+            select(BankCardCharge).where(BankCardCharge.kind == "subscription")
         ).all()
         for item in charges:
             allocations = db.scalars(
@@ -148,7 +177,7 @@ def list_transactions(
             ).all()
             transactions.append({
                 "id": f"charge-{item.id}",
-                "type": "charge" if item.kind == "subscription" else "adjustment",
+                "type": "charge",
                 "title": item.subscription_name,
                 "usdt_delta": -item.charged_usdt,
                 "cny_amount": item.actual_cny_cost,

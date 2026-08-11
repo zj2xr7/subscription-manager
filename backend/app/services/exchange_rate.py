@@ -1,4 +1,5 @@
-import asyncio
+import hashlib
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -15,22 +16,26 @@ FALLBACK_RATES = {
 
 class ExchangeRateService:
     def __init__(self):
-        self._cache: dict[str, tuple[float, dict[str, float]]] = {}
-        self._sources: dict[str, str] = {}
-        self._lock = asyncio.Lock()
+        self._cache: dict[tuple[str, str], tuple[float, dict[str, float], str]] = {}
+        self._lock = threading.RLock()
+
+    @staticmethod
+    def _key_id(api_key: str) -> str:
+        return hashlib.sha256(api_key.strip().encode("utf-8")).hexdigest()[:16] if api_key.strip() else "reference"
 
     async def rates(self, base: str, api_key: str = "") -> dict[str, float]:
         base = base.upper()
-        cached = self._cache.get(base)
+        cache_key = (base, self._key_id(api_key))
+        with self._lock:
+            cached = self._cache.get(cache_key)
         if cached and time.time() - cached[0] < 3600:
             return cached[1]
-        async with self._lock:
-            cached = self._cache.get(base)
+        rates, source = await self._fetch(base, api_key)
+        with self._lock:
+            cached = self._cache.get(cache_key)
             if cached and time.time() - cached[0] < 3600:
                 return cached[1]
-            rates, source = await self._fetch(base, api_key)
-            self._cache[base] = (time.time(), rates)
-            self._sources[base] = source
+            self._cache[cache_key] = (time.time(), rates, source)
             return rates
 
     async def _fetch(self, base: str, api_key: str) -> dict[str, float]:
@@ -49,21 +54,28 @@ class ExchangeRateService:
         except (httpx.HTTPError, ValueError, TypeError, KeyError):
             return FALLBACK_RATES[base].copy(), "reference"
 
-    def invalidate(self):
-        self._cache.clear()
-        self._sources.clear()
+    def invalidate(self, api_key: str | None = None):
+        with self._lock:
+            if api_key is None:
+                self._cache.clear()
+                return
+            key_id = self._key_id(api_key)
+            self._cache = {key: value for key, value in self._cache.items() if key[1] != key_id}
 
     async def cny_quotes(self, api_key: str = "", refresh: bool = False) -> dict:
         if refresh:
-            self.invalidate()
+            self.invalidate(api_key)
         quotes = {}
         timestamps = []
         sources = []
+        key_id = self._key_id(api_key)
         for currency in ("USD", "GBP", "CAD"):
             rates = await self.rates(currency, api_key)
             quotes[currency] = round(rates["CNY"], 4)
-            timestamps.append(self._cache[currency][0])
-            sources.append(self._sources.get(currency, "reference"))
+            with self._lock:
+                cached = self._cache[(currency, key_id)]
+            timestamps.append(cached[0])
+            sources.append(cached[2])
         updated = datetime.fromtimestamp(max(timestamps), tz=timezone.utc).isoformat()
         return {
             "base": "CNY",

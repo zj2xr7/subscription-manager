@@ -11,23 +11,25 @@ const validPages = ['dashboard', 'subscriptions', 'bank-card', 'settings']
 export default function App() {
   const [page, setPage] = useState(() => validPages.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'dashboard')
   const [subscriptions, setSubscriptions] = useState([])
+  const [subscriptionCharges, setSubscriptionCharges] = useState([])
   const [balance, setBalance] = useState(0)
   const [deposits, setDeposits] = useState([])
   const [lots, setLots] = useState([])
   const [transactions, setTransactions] = useState([])
   const [exchangeQuotes, setExchangeQuotes] = useState(null)
-  const [settings, setSettings] = useState({ server_chan_key: '', exchange_rate_api_key: '', notification_days_before: 7 })
+  const [notificationOverview, setNotificationOverview] = useState(null)
+  const [settings, setSettings] = useState({ server_chan_key: '', exchange_rate_api_key: '', notification_days_before: [7] })
   const [loading, setLoading] = useState(true)
   const [toast, setToast] = useState(null)
   const notify = (message, type = 'success') => { setToast({ message, type }); setTimeout(() => setToast(null), 3200) }
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [s, b, d, availableLots, ledger, config, quotes] = await Promise.all([
-        api.subscriptions(), api.balance(), api.deposits(), api.lots(), api.transactions(), api.settings(), api.exchangeQuotes(),
+      const [s, payments, b, d, availableLots, ledger, config, quotes, notifications] = await Promise.all([
+        api.subscriptions(), api.subscriptionCharges(), api.balance(), api.deposits(), api.lots(), api.transactions(), api.settings(), api.exchangeQuotes(), api.notificationOverview(),
       ])
-      setSubscriptions(s); setBalance(b.balance); setDeposits(d); setLots(availableLots)
-      setTransactions(ledger); setSettings(config); setExchangeQuotes(quotes)
+      setSubscriptions(s); setSubscriptionCharges(payments); setBalance(b.balance); setDeposits(d); setLots(availableLots)
+      setTransactions(ledger); setSettings(config); setExchangeQuotes(quotes); setNotificationOverview(notifications)
     } catch (error) { notify(error.message, 'error') } finally { setLoading(false) }
   }, [])
   useEffect(() => { load() }, [load])
@@ -42,10 +44,10 @@ export default function App() {
     catch (error) { notify(error.message, 'error'); throw error }
   }
   const pages = {
-    dashboard: <Dashboard subscriptions={subscriptions} balance={balance} lots={lots} loading={loading} onNavigate={navigate} />,
+    dashboard: <Dashboard subscriptions={subscriptions} charges={subscriptionCharges} notifications={notificationOverview} balance={balance} lots={lots} loading={loading} onNavigate={navigate} />,
     subscriptions: <Subscriptions items={subscriptions} onCreate={data => action(api.createSubscription(data), '订阅已添加')} onUpdate={(id, data) => action(api.updateSubscription(id, data), '订阅已更新')} onDelete={item => confirm(`确定删除“${item.name}”吗？`) && action(api.deleteSubscription(item.id), '订阅已删除')} onCharge={item => confirm(`确认处理“${item.name}”本期扣款并推进续费日期？`) && action(api.chargeSubscription(item.id), '扣款已完成')} />,
-    'bank-card': <BankCard balance={balance} deposits={deposits} lots={lots} transactions={transactions} subscriptions={subscriptions} onQuote={api.topUpQuote} onDeposit={data => action(api.deposit(data), '充值已记录')} />,
-    settings: <Settings settings={settings} exchangeQuotes={exchangeQuotes} onRefreshRates={async () => { const quotes = await api.exchangeQuotes(true); setExchangeQuotes(quotes); notify('汇率已刷新') }} onSave={async data => { await action(api.saveSettings(data), '设置已保存'); const quotes = await api.exchangeQuotes(true); setExchangeQuotes(quotes) }} onTest={key => action(api.testNotification(key), '测试通知已发送')} />,
+    'bank-card': <BankCard balance={balance} deposits={deposits} lots={lots} transactions={transactions} subscriptions={subscriptions} onQuote={api.topUpQuote} onDeposit={data => action(api.deposit(data), '充值已记录')} onDeleteDeposit={id => action(api.deleteDeposit(id), '未使用充值记录已删除')} />,
+    settings: <Settings settings={settings} exchangeQuotes={exchangeQuotes} onSaveNotification={async data => { try { const saved = await api.saveNotificationSettings(data); setSettings(saved); setNotificationOverview(await api.notificationOverview()); notify('通知设置已保存') } catch (error) { notify(error.message, 'error'); throw error } }} onSaveExchange={async key => { try { const result = await api.saveExchangeRateSettings(key); setSettings(result.settings); setExchangeQuotes(result.quotes); notify(key ? '汇率设置已保存并同步实时汇率' : '已切换为内置参考汇率') } catch (error) { notify(error.message, 'error'); throw error } }} onRefreshRates={async () => { try { const quotes = await api.exchangeQuotes(true); setExchangeQuotes(quotes); notify(quotes.source === 'api' ? '实时汇率已更新' : '已刷新内置参考汇率', quotes.source === 'api' ? 'success' : 'error') } catch (error) { notify(error.message, 'error'); throw error } }} onTest={async () => { try { await api.testNotification(); setNotificationOverview(await api.notificationOverview()); notify('测试通知已发送') } catch (error) { setNotificationOverview(await api.notificationOverview().catch(() => notificationOverview)); notify(error.message, 'error'); throw error } }} />,
   }
   return <><Navbar page={page} onNavigate={navigate} />{loading && <div className="loading-line" />}{pages[page]}{toast && <div className={`toast ${toast.type}`}>{toast.type === 'success' ? '✓' : '!'} {toast.message}</div>}<footer>看清每一笔订阅，掌握每一分成本。</footer></>
 }

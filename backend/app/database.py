@@ -1,4 +1,6 @@
 import os
+import json
+from datetime import datetime, time
 from pathlib import Path
 
 from sqlalchemy import create_engine, inspect, select, text
@@ -38,10 +40,12 @@ def init_db():
     with SessionLocal() as db:
         if db.get(models.BankCardBalance, 1) is None:
             db.add(models.BankCardBalance(id=1, balance=0))
+        if db.get(models.NotificationSchedulerState, 1) is None:
+            db.add(models.NotificationSchedulerState(id=1))
         defaults = {
             "server_chan_key": os.getenv("SERVER_CHAN_KEY", ""),
             "exchange_rate_api_key": os.getenv("EXCHANGE_RATE_API_KEY", ""),
-            "notification_days_before": "7",
+            "notification_days_before": "[7]",
         }
         for key, value in defaults.items():
             if db.get(models.AppSettings, key) is None:
@@ -93,4 +97,65 @@ def init_db():
                 db.add(models.AppSettings(key="schema_version", value="2"))
             else:
                 version.value = "2"
+        db.flush()
+        version = db.get(models.AppSettings, "schema_version")
+        if version is None or int(version.value or 0) < 3:
+            notification_days = db.get(models.AppSettings, "notification_days_before")
+            try:
+                raw_days = json.loads(notification_days.value or "7")
+            except (TypeError, ValueError):
+                raw_days = int(notification_days.value or 7)
+            if isinstance(raw_days, int):
+                raw_days = [raw_days]
+            normalized_days = sorted({int(day) for day in raw_days if 0 <= int(day) <= 90}, reverse=True) or [7]
+            notification_days.value = json.dumps(normalized_days)
+            for item in db.scalars(
+                select(models.Subscription).where(models.Subscription.last_notified_date.is_not(None))
+            ).all():
+                lead_days = (item.next_billing_date - item.last_notified_date).days
+                if not 0 <= lead_days <= 90:
+                    continue
+                exists = db.scalar(select(models.NotificationDelivery.id).where(
+                    models.NotificationDelivery.kind == "scheduled",
+                    models.NotificationDelivery.subscription_id == item.id,
+                    models.NotificationDelivery.billing_date == item.next_billing_date,
+                    models.NotificationDelivery.lead_days == lead_days,
+                ))
+                if exists is None:
+                    db.add(models.NotificationDelivery(
+                        kind="scheduled",
+                        subscription_id=item.id,
+                        subscription_name=item.name,
+                        billing_date=item.next_billing_date,
+                        lead_days=lead_days,
+                        status="sent",
+                        attempted_at=datetime.combine(item.last_notified_date, time(hour=1)),
+                    ))
+            version.value = "3"
+        db.flush()
+        version = db.get(models.AppSettings, "schema_version")
+        if version is None or int(version.value or 0) < 4:
+            from .services.notification import sanitize_notification_error
+
+            state = db.get(models.NotificationSchedulerState, 1)
+            if state and state.error_message:
+                lowered = state.error_message.lower()
+                if "different event loop" in lowered or "asyncio" in lowered:
+                    state.status = "never"
+                    state.error_message = None
+                    state.due_count = state.sent_count = state.failed_count = 0
+                else:
+                    state.error_message = sanitize_notification_error(state.error_message, scheduler=True)
+            for delivery in db.scalars(
+                select(models.NotificationDelivery).where(models.NotificationDelivery.error_message.is_not(None))
+            ).all():
+                delivery.error_message = sanitize_notification_error(delivery.error_message)
+            version.value = "4"
+        db.flush()
+        version = db.get(models.AppSettings, "schema_version")
+        if version is None or int(version.value or 0) < 5:
+            from .services.bank_funds import purge_historical_adjustments
+
+            purge_historical_adjustments(db)
+            version.value = "5"
         db.commit()
