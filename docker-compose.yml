@@ -1,7 +1,8 @@
 services:
   submanager:
-    image: ${SUBMANAGER_IMAGE:-ghcr.io/zj2xr7/submanager:latest}
-    build: .
+    build:
+      context: .
+    image: subscription-manager:local
     container_name: submanager
     ports:
       - "8000:8000"
