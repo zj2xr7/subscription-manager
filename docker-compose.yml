@@ -3,7 +3,7 @@ services:
     build:
       context: .
     image: subscription-manager:local
-    container_name: submanager
+    container_name: subscription-manager
     ports:
       - "8000:8000"
     env_file:

@@ -103,9 +103,90 @@ curl --fail http://127.0.0.1:8000/api/health
 
 浏览器访问 <http://127.0.0.1:8000>。
 
-Compose 会在本地创建 `subscription-manager:local` 镜像，并将 SQLite 数据持久化到项目根目录的 `data/`。更新代码后再次运行：
+Compose 会在本地创建 `subscription-manager:local` 镜像和名为 `subscription-manager` 的容器，并将 SQLite 数据持久化到项目根目录的 `data/`。
+
+### Nginx 反向代理
+
+以下示例假设：
+
+- Subscription Manager 与 Nginx 安装在同一台 Linux 主机上
+- 应用监听 `127.0.0.1:8000`
+- 域名 `subscription.example.com` 已解析到该主机
+- 防火墙已放行 `80` 和 `443` 端口
+
+在 Debian 或 Ubuntu 上安装 Nginx：
+
+```bash
+sudo apt update
+sudo apt install -y nginx
+```
+
+创建站点配置：
+
+```bash
+sudo tee /etc/nginx/sites-available/subscription-manager > /dev/null <<'EOF'
+server {
+    listen 80;
+    listen [::]:80;
+    server_name subscription.example.com;
+
+    client_max_body_size 10m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+}
+EOF
+```
+
+将示例域名替换为你的真实域名，然后启用站点并检查配置：
+
+```bash
+sudo ln -s /etc/nginx/sites-available/subscription-manager /etc/nginx/sites-enabled/subscription-manager
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+此时可通过 `http://subscription.example.com` 访问应用。建议使用 Certbot 配置 HTTPS：
+
+```bash
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d subscription.example.com
+```
+
+验证 HTTPS、反向代理和证书自动续期：
+
+```bash
+curl --fail https://subscription.example.com/api/health
+sudo certbot renew --dry-run
+```
+
+如果同一台主机上的其他设备不需要直接访问 `8000` 端口，可将 `docker-compose.yml` 中的端口映射限制为本机回环地址：
+
+```yaml
+ports:
+  - "127.0.0.1:8000:8000"
+```
+
+修改后重新创建容器：
+
+```bash
+docker compose up -d --build --force-recreate
+```
 
 ### 更新部署
+
+更新代码后重新构建并启动：
 
 ```bash
 cd subscription-manager
