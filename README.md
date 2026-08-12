@@ -56,22 +56,66 @@ cp .env.example .env
 
 ## Docker
 
-项目不使用预构建镜像。部署时从当前源码构建镜像：
+项目不使用预构建镜像，每次部署均从当前源码构建。
+
+### 环境要求
+
+- Git
+- Docker Engine 24 或更高版本
+- Docker Compose v2 插件
+- 主机的 `8000` 端口可用
+
+确认环境：
+
+```bash
+git --version
+docker --version
+docker compose version
+```
+
+### 首次部署
+
+克隆仓库并进入项目目录：
+
+```bash
+git clone https://github.com/zj2xr7/subscription-manager.git
+cd subscription-manager
+```
+
+创建本地配置文件：
 
 ```bash
 cp .env.example .env
-docker compose up -d --build
 ```
 
-访问 <http://127.0.0.1:8000>。
-
-Compose 会在本地创建 `subscription-manager:local` 镜像，并将 SQLite 数据持久化到项目根目录的 `data/`。更新代码后再次运行：
+根据需要编辑 `.env` 中的 Server 酱和汇率 API Key，然后构建并启动服务：
 
 ```bash
 docker compose up -d --build
 ```
 
-查看状态与日志：
+检查容器和接口状态：
+
+```bash
+docker compose ps
+curl --fail http://127.0.0.1:8000/api/health
+```
+
+浏览器访问 <http://127.0.0.1:8000>。
+
+Compose 会在本地创建 `subscription-manager:local` 镜像，并将 SQLite 数据持久化到项目根目录的 `data/`。更新代码后再次运行：
+
+### 更新部署
+
+```bash
+cd subscription-manager
+git pull --ff-only origin main
+docker compose up -d --build
+```
+
+### 日常运维
+
+查看状态和实时日志：
 
 ```bash
 docker compose ps
@@ -82,6 +126,18 @@ docker compose logs -f
 
 ```bash
 docker compose down
+```
+
+重启服务：
+
+```bash
+docker compose restart
+```
+
+SQLite 数据保存在 `data/`，执行 `docker compose down` 不会删除这些数据。升级或迁移前可备份整个目录：
+
+```bash
+tar -czf subscription-manager-data-backup.tar.gz data/
 ```
 
 ## 测试与构建
