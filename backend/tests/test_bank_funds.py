@@ -15,9 +15,19 @@ from app.models import (
     BankCardCharge,
     BankCardChargeAllocation,
     BankCardDeposit,
+    BankCardPurchase,
+    BankCardTransfer,
     Subscription,
 )
-from app.services.bank_funds import DepositAlreadyUsedError, allocate_fifo, delete_deposit_cascade
+from app.services.bank_funds import (
+    DepositAlreadyUsedError,
+    TransferAlreadyUsedError,
+    allocate_fifo,
+    create_combined_transfer,
+    create_pending_purchase,
+    delete_deposit_cascade,
+    delete_unused_transfer,
+)
 from app.routers.bank_card import router as bank_card_router
 
 
@@ -179,7 +189,7 @@ class HistoricalAdjustmentCleanupTests(unittest.TestCase):
             init_db()
             init_db()
         with self.Factory() as db:
-            self.assertEqual(db.get(AppSettings, "schema_version").value, "5")
+            self.assertEqual(db.get(AppSettings, "schema_version").value, "6")
             self.assertIsNone(db.get(BankCardDeposit, 1))
             self.assertEqual(db.get(BankCardDeposit, 2).remaining_usdt, 10)
             self.assertEqual(db.get(BankCardBalance, 1).balance, 10)
@@ -203,6 +213,154 @@ class HistoricalAdjustmentCleanupTests(unittest.TestCase):
         self.assertNotIn("adjustment", [item["type"] for item in response.json()])
         rejected = client.get("/api/bank-card/transactions?type=adjustment")
         self.assertEqual(rejected.status_code, 422)
+
+
+class CombinedTransferTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(self.engine)
+        self.db = Session(self.engine)
+        self.db.add(BankCardBalance(id=1, balance=0))
+        self.db.commit()
+
+    def tearDown(self):
+        self.db.close()
+        self.engine.dispose()
+
+    def test_pending_purchases_do_not_change_balance_and_share_one_fee(self):
+        first = create_pending_purchase(self.db, 65, 6.5)
+        second = create_pending_purchase(self.db, 70, 7)
+        self.assertEqual(self.db.get(BankCardBalance, 1).balance, 0)
+
+        transfer, deposits = create_combined_transfer(self.db, [first.id, second.id], .01)
+        self.db.commit()
+
+        self.assertEqual(transfer.gross_usdt, 20)
+        self.assertEqual(transfer.actual_received, 19.99)
+        self.assertEqual([item.fee_allocated for item in deposits], [.01, 0])
+        self.assertEqual(self.db.get(BankCardBalance, 1).balance, 19.99)
+        self.assertEqual([first.status, second.status], ["transferred", "transferred"])
+
+    def test_fee_allocation_can_cross_small_purchase_lots(self):
+        first = create_pending_purchase(self.db, .035, 7)
+        second = create_pending_purchase(self.db, 7, 7)
+        _transfer, deposits = create_combined_transfer(self.db, [first.id, second.id], .01)
+        self.db.commit()
+        self.assertEqual([item.fee_allocated for item in deposits], [.005, .005])
+        self.assertEqual([item.actual_received for item in deposits], [0, .995])
+
+    def test_deleting_unused_transfer_returns_purchases_to_pending(self):
+        first = create_pending_purchase(self.db, 65, 6.5)
+        second = create_pending_purchase(self.db, 70, 7)
+        transfer, _deposits = create_combined_transfer(self.db, [first.id, second.id], .01)
+        self.db.commit()
+
+        result = delete_unused_transfer(self.db, transfer.id)
+        self.db.commit()
+
+        self.assertEqual(result["restored_purchase_ids"], [first.id, second.id])
+        self.assertEqual(self.db.get(BankCardBalance, 1).balance, 0)
+        self.assertEqual(self.db.get(BankCardPurchase, first.id).status, "pending")
+        self.assertEqual(self.db.query(BankCardDeposit).count(), 0)
+
+    def test_used_lot_protects_complete_transfer(self):
+        purchase = create_pending_purchase(self.db, 65, 6.5)
+        transfer, deposits = create_combined_transfer(self.db, [purchase.id], .01)
+        charge = BankCardCharge(
+            kind="subscription", subscription_name="Service", charged_usdt=1,
+            actual_cny_cost=6.5, balance_before=9.99, balance_after=8.99,
+        )
+        self.db.add(charge)
+        self.db.flush()
+        self.db.add(BankCardChargeAllocation(
+            charge_id=charge.id, deposit_id=deposits[0].id,
+            usdt_amount=1, c2c_rate=6.5, cny_cost=6.5,
+        ))
+        deposits[0].remaining_usdt -= 1
+        self.db.commit()
+
+        with self.assertRaises(TransferAlreadyUsedError):
+            delete_unused_transfer(self.db, transfer.id)
+
+
+class CombinedTransferMigrationTests(unittest.TestCase):
+    def test_four_legacy_rows_become_two_transfers_and_restore_duplicate_fees(self):
+        engine = create_engine(
+            "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
+        )
+        Factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        Base.metadata.create_all(engine)
+        with Factory() as db:
+            db.add_all([
+                AppSettings(key="schema_version", value="5"),
+                BankCardBalance(id=1, balance=39.96),
+                *[
+                    BankCardDeposit(
+                        id=index, usdt_amount=10, c2c_rate=7, cny_cost=70,
+                        chain_fee=.01, actual_received=9.99, remaining_usdt=9.99,
+                    ) for index in range(1, 5)
+                ],
+            ])
+            db.commit()
+        with patch("app.database.engine", engine), patch("app.database.SessionLocal", Factory):
+            init_db()
+            init_db()
+        with Factory() as db:
+            self.assertEqual(db.get(AppSettings, "schema_version").value, "6")
+            transfers = db.query(BankCardTransfer).order_by(BankCardTransfer.id).all()
+            self.assertEqual(len(transfers), 2)
+            self.assertEqual([transfers[0].actual_received, transfers[1].actual_received], [9.99, 29.99])
+            self.assertEqual(db.get(BankCardBalance, 1).balance, 39.98)
+            second_lots = db.query(BankCardDeposit).filter_by(transfer_id=transfers[1].id).order_by(BankCardDeposit.id).all()
+            self.assertEqual([item.fee_allocated for item in second_lots], [.01, 0, 0])
+        engine.dispose()
+
+
+class CombinedTransferApiTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
+        )
+        Base.metadata.create_all(self.engine)
+        self.Factory = sessionmaker(bind=self.engine, autoflush=False, autocommit=False)
+        with self.Factory() as db:
+            db.add(BankCardBalance(id=1, balance=0))
+            db.commit()
+        app = FastAPI()
+        app.include_router(bank_card_router)
+
+        def override_db():
+            with self.Factory() as db:
+                yield db
+
+        app.dependency_overrides[get_db] = override_db
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        self.engine.dispose()
+
+    def test_purchase_transfer_grouped_ledger_and_restore(self):
+        first = self.client.post("/api/bank-card/purchases", json={"cny_amount": 65, "c2c_rate": 6.5}).json()
+        second = self.client.post("/api/bank-card/purchases", json={"cny_amount": 70, "c2c_rate": 7}).json()
+        self.assertEqual(self.client.get("/api/bank-card/balance").json()["balance"], 0)
+
+        response = self.client.post("/api/bank-card/transfers", json={
+            "purchase_ids": [first["id"], second["id"]], "chain_fee": .01,
+        })
+        self.assertEqual(response.status_code, 201)
+        transfer = response.json()
+        self.assertEqual(transfer["actual_received"], 19.99)
+        self.assertEqual([item["fee_allocated"] for item in transfer["items"]], [.01, 0])
+
+        ledger = self.client.get("/api/bank-card/transactions?type=deposit").json()
+        self.assertEqual(len(ledger), 1)
+        self.assertEqual(len(ledger[0]["details"]["items"]), 2)
+
+        deleted = self.client.delete(f'/api/bank-card/transfers/{transfer["id"]}')
+        self.assertEqual(deleted.status_code, 200)
+        pending = self.client.get("/api/bank-card/purchases?status=pending").json()
+        self.assertEqual([item["id"] for item in pending], [first["id"], second["id"]])
+        self.assertEqual(self.client.get("/api/bank-card/balance").json()["balance"], 0)
 
 
 if __name__ == "__main__":

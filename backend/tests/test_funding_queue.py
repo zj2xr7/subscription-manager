@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import BankCardBalance, BankCardDeposit, Subscription
+from app.models import BankCardBalance, BankCardDeposit, BankCardPurchase, Subscription
 from app.routers.bank_card import top_up_quote
 from app.routers.subscriptions import charge_subscription
 from app.schemas import TopUpQuoteRequest
@@ -82,6 +82,18 @@ class FundingQueueIntegrationTests(unittest.TestCase):
         self.assertEqual(quote.reserved_usdt, 2.06)
         self.assertEqual(quote.covered_usdt, 4.94)
         self.assertEqual(quote.shortfall_usdt, 1.24)
+
+    def test_top_up_quote_deducts_pending_purchase_before_suggesting_more(self):
+        self.db.add(BankCardPurchase(
+            cny_amount=7, c2c_rate=7, purchased_usdt=1, status="pending"
+        ))
+        self.db.commit()
+        quote = asyncio.run(top_up_quote(
+            TopUpQuoteRequest(subscription_ids=[self.chatgpt.id], c2c_rate=7, chain_fee=.01), self.db
+        ))
+        self.assertEqual(quote.pending_usdt, 1)
+        self.assertEqual(quote.additional_purchase_usdt, .25)
+        self.assertEqual(quote.suggested_cny_amount, 1.75)
 
     def test_partial_coverage_has_full_reference_estimate_without_actual_cost(self):
         _, funding = asyncio.run(build_bank_funding_queue(self.db))
