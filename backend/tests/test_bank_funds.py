@@ -362,6 +362,30 @@ class CombinedTransferApiTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in pending], [first["id"], second["id"]])
         self.assertEqual(self.client.get("/api/bank-card/balance").json()["balance"], 0)
 
+    def test_transfer_accepts_an_arbitrary_subset_of_pending_purchases(self):
+        purchases = [
+            self.client.post("/api/bank-card/purchases", json={
+                "cny_amount": amount, "c2c_rate": 7,
+            }).json()
+            for amount in (7, 14, 21)
+        ]
+
+        response = self.client.post("/api/bank-card/transfers", json={
+            "purchase_ids": [purchases[0]["id"], purchases[2]["id"]],
+            "chain_fee": .01,
+        })
+        self.assertEqual(response.status_code, 201)
+        transferred = response.json()
+        self.assertEqual(
+            [item["purchase_id"] for item in transferred["items"]],
+            [purchases[0]["id"], purchases[2]["id"]],
+        )
+        self.assertEqual(transferred["gross_usdt"], 4)
+        self.assertEqual(transferred["actual_received"], 3.99)
+
+        pending = self.client.get("/api/bank-card/purchases?status=pending").json()
+        self.assertEqual([item["id"] for item in pending], [purchases[1]["id"]])
+
 
 if __name__ == "__main__":
     unittest.main()
