@@ -19,17 +19,45 @@ Subscription Manager（SubManager）是一个本地优先的单用户订阅管�
 
 ### 后端
 
+Linux / macOS：
+
 ```bash
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 python -m uvicorn app.main:app --reload --port 8000
+```
+
+Windows PowerShell：
+
+```powershell
+cd backend
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m uvicorn app.main:app --reload --port 8000
+```
+
+如果 PowerShell 阻止执行激活脚本，可以只为当前终端临时放宽策略后再激活：
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+```
+
+也可以完全跳过激活步骤，直接使用虚拟环境中的解释器：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
 ```
 
 API 文档位于 <http://127.0.0.1:8000/docs>。
 
 ### 前端
+
+Linux / macOS：
 
 ```bash
 cd frontend
@@ -37,6 +65,17 @@ corepack enable
 pnpm install --frozen-lockfile
 pnpm run dev
 ```
+
+Windows PowerShell：
+
+```powershell
+cd frontend
+corepack.cmd enable
+pnpm.cmd install --frozen-lockfile
+pnpm.cmd run dev
+```
+
+PowerShell 可能因执行策略阻止 `pnpm.ps1`；使用上面的 `pnpm.cmd` 即可，无需修改系统级执行策略。
 
 打开 <http://127.0.0.1:5173>，Vite 会将 `/api` 转发到后端。
 

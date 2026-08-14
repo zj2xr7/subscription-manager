@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
-import DepositForm from '../components/DepositForm'
+import C2CPurchaseForm from '../components/C2CPurchaseForm'
+import TransferForm from '../components/TransferForm'
 
 const filters = [['all', '全部'], ['deposit', '提链到账'], ['charge', '订阅扣款']]
 
@@ -19,19 +20,21 @@ export default function BankCard({
   const shown = filter === 'all' ? transactions : transactions.filter(item => item.type === filter)
   const costBasis = useMemo(() => lots.reduce((sum, lot) => sum + lot.remaining_usdt * lot.c2c_rate, 0), [lots])
   const averageRate = balance > 0 ? costBasis / balance : 0
+  const pendingUsdt = useMemo(() => pendingPurchases.reduce((sum, item) => sum + item.purchased_usdt, 0), [pendingPurchases])
   const removeTransfer = item => {
     if (confirm('该次提链尚未参与订阅扣款。删除后，关联 C2C 买入会退回待提链池，银行卡余额同步减少。\n\n确定删除吗？')) onDeleteTransfer(item.transfer_id)
   }
 
   return <main>
     <div className="page-head"><div><p className="eyebrow">BANK FUNDS</p><h1>USDT 资金</h1><p>分开记录 C2C 买入与实际提链，逐笔追踪订阅的真实人民币成本。</p></div></div>
-    <section className="bank-layout">
-      <div className="balance-overview panel">
+    <section className="balance-overview panel bank-summary">
         <div className="balance-heading"><div><span>可用余额</span><strong>{balance.toFixed(2)} <small>USDT</small></strong></div><span className={`balance-badge ${balance < 20 ? 'low' : ''}`}>{balance < 20 ? '余额偏低' : '余额充足'}</span></div>
-        <div className="balance-metrics"><div><span>剩余批次</span><b>{lots.length} 个</b></div><div><span>余额成本</span><b>¥{costBasis.toFixed(2)}</b></div><div><span>平均成本</span><b>¥{averageRate.toFixed(2)}</b></div></div>
+        <div className="balance-metrics"><div><span>剩余批次</span><b>{lots.length} 个</b></div><div><span>余额成本</span><b>¥{costBasis.toFixed(2)}</b></div><div><span>平均成本</span><b>¥{averageRate.toFixed(2)}</b></div><div><span>待提链记录</span><b>{pendingPurchases.length} 笔</b></div><div><span>待提链资金</span><b>{pendingUsdt.toFixed(2)} USDT</b></div></div>
         <div className="lot-list"><div className="picker-head"><b>可用批次</b><small>订阅扣款按先进先出</small></div>{lots.length ? lots.map(lot => <div className="lot-row" key={lot.id}><span>批次 #{lot.id}<small>{new Date(lot.created_at).toLocaleDateString('zh-CN')}</small></span><b>{lot.remaining_usdt.toFixed(2)} USDT<small>¥{lot.c2c_rate.toFixed(2)} / USDT</small></b></div>) : <p className="muted-copy">暂无可用到账批次</p>}</div>
-      </div>
-      <DepositForm balance={balance} subscriptions={subscriptions} pendingPurchases={pendingPurchases} onQuote={onQuote} onCreatePurchase={onCreatePurchase} onDeletePurchase={onDeletePurchase} onTransfer={onTransfer} />
+    </section>
+    <section className="fund-actions-grid">
+      <C2CPurchaseForm subscriptions={subscriptions} pendingPurchases={pendingPurchases} onQuote={onQuote} onCreatePurchase={onCreatePurchase} />
+      <TransferForm pendingPurchases={pendingPurchases} onDeletePurchase={onDeletePurchase} onTransfer={onTransfer} />
     </section>
 
     <section className="panel history">
