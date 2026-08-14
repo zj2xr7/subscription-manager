@@ -187,7 +187,7 @@ async def charge_subscription(subscription_id: int, db: Session = Depends(get_db
             if cost["coverage_status"] != "sufficient":
                 raise HTTPException(
                     409,
-                    f"Insufficient USDT after earlier renewals; {cost['shortfall_usdt']:.4f} more required",
+                    f"Insufficient USDT after earlier renewals; {cost['shortfall_usdt']:.2f} more required",
                 )
             allocations, _ = allocate_fifo(db, charged, consume=True)
             allocation_data = [allocation.as_dict() for allocation in allocations]

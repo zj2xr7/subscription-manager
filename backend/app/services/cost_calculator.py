@@ -22,7 +22,7 @@ async def calculate_cost(
             "usdt_charge": None,
             "c2c_rate": None,
             "cny_cost": round(cny_cost, 2),
-            "formula": f"{price:.2f} {currency} × {rate:.4f} = ¥{cny_cost:.2f}",
+            "formula": f"{price:.2f} {currency} × {rate:.2f} = ¥{cny_cost:.2f}",
         }
 
     if currency == "CNY":
@@ -40,6 +40,6 @@ async def calculate_cost(
         "usdt_charge": round(usdt_charge, 4),
         "c2c_rate": None,
         "cny_cost": None,
-        "formula": f"{price:.2f} {currency} × {usd_rate:.4f} × 1.03 = {usdt_charge:.4f} USDT",
+        "formula": f"{price:.2f} {currency} × {usd_rate:.2f} × 1.03 = {usdt_charge:.2f} USDT",
         "required_usdt": round(usdt_charge, 4),
     }
