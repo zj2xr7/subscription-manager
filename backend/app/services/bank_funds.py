@@ -9,6 +9,8 @@ from ..models import (
     BankCardCharge,
     BankCardChargeAllocation,
     BankCardDeposit,
+    BankCardPurchase,
+    BankCardTransfer,
     Subscription,
 )
 
@@ -29,6 +31,145 @@ class Allocation:
 
 class DepositAlreadyUsedError(ValueError):
     pass
+
+
+class TransferAlreadyUsedError(ValueError):
+    pass
+
+
+def create_pending_purchase(db: Session, cny_amount: float, c2c_rate: float) -> BankCardPurchase:
+    purchased = round(cny_amount / c2c_rate, 4)
+    if purchased <= 0:
+        raise ValueError("Purchase amount must be greater than zero")
+    purchase = BankCardPurchase(
+        cny_amount=round(cny_amount, 2),
+        c2c_rate=round(c2c_rate, 4),
+        purchased_usdt=purchased,
+        status="pending",
+    )
+    db.add(purchase)
+    db.flush()
+    return purchase
+
+
+def create_combined_transfer(
+    db: Session, purchase_ids: list[int], chain_fee: float
+) -> tuple[BankCardTransfer, list[BankCardDeposit]]:
+    purchases = db.scalars(
+        select(BankCardPurchase)
+        .where(BankCardPurchase.id.in_(purchase_ids))
+        .order_by(BankCardPurchase.created_at, BankCardPurchase.id)
+    ).all()
+    by_id = {item.id: item for item in purchases}
+    if len(by_id) != len(purchase_ids):
+        raise LookupError("One or more C2C purchases were not found")
+    if any(item.status != "pending" for item in purchases):
+        raise ValueError("Only pending C2C purchases can be transferred")
+
+    gross = round(sum(item.purchased_usdt for item in purchases), 4)
+    fee = round(chain_fee, 4)
+    if gross <= fee:
+        raise ValueError("Selected purchases must exceed the chain fee")
+
+    transfer = BankCardTransfer(
+        gross_usdt=gross,
+        chain_fee=fee,
+        actual_received=round(gross - fee, 4),
+    )
+    db.add(transfer)
+    db.flush()
+
+    fee_left = fee
+    deposits: list[BankCardDeposit] = []
+    for purchase in purchases:
+        allocated_fee = round(min(purchase.purchased_usdt, fee_left), 4)
+        fee_left = round(fee_left - allocated_fee, 4)
+        received = round(purchase.purchased_usdt - allocated_fee, 4)
+        deposit = BankCardDeposit(
+            usdt_amount=purchase.purchased_usdt,
+            c2c_rate=purchase.c2c_rate,
+            cny_cost=purchase.cny_amount,
+            chain_fee=allocated_fee,
+            fee_allocated=allocated_fee,
+            actual_received=received,
+            remaining_usdt=received,
+            purchase_id=purchase.id,
+            transfer_id=transfer.id,
+            created_at=transfer.created_at,
+        )
+        purchase.status = "transferred"
+        db.add(deposit)
+        deposits.append(deposit)
+
+    balance = db.get(BankCardBalance, 1)
+    balance.balance = round(balance.balance + transfer.actual_received, 4)
+    db.flush()
+    return transfer, deposits
+
+
+def transfer_details(db: Session, transfer: BankCardTransfer) -> dict:
+    deposits = db.scalars(
+        select(BankCardDeposit)
+        .where(BankCardDeposit.transfer_id == transfer.id)
+        .order_by(BankCardDeposit.created_at, BankCardDeposit.id)
+    ).all()
+    used = round(sum(item.actual_received - (item.remaining_usdt or 0) for item in deposits), 4)
+    has_allocations = bool(db.scalar(
+        select(BankCardChargeAllocation.id)
+        .where(BankCardChargeAllocation.deposit_id.in_([item.id for item in deposits] or [-1]))
+        .limit(1)
+    ))
+    return {
+        "id": transfer.id,
+        "gross_usdt": transfer.gross_usdt,
+        "chain_fee": transfer.chain_fee,
+        "actual_received": transfer.actual_received,
+        "deletable": used <= 0.00005 and not has_allocations,
+        "used_usdt": used,
+        "created_at": transfer.created_at,
+        "items": [{
+            "deposit_id": item.id,
+            "purchase_id": item.purchase_id,
+            "cny_amount": item.cny_cost,
+            "c2c_rate": item.c2c_rate,
+            "purchased_usdt": item.usdt_amount,
+            "fee_allocated": item.fee_allocated or 0,
+            "actual_received": item.actual_received,
+            "remaining_usdt": item.remaining_usdt or 0,
+        } for item in deposits],
+    }
+
+
+def delete_unused_transfer(db: Session, transfer_id: int) -> dict | None:
+    transfer = db.get(BankCardTransfer, transfer_id)
+    if transfer is None:
+        return None
+    details = transfer_details(db, transfer)
+    if not details["deletable"]:
+        raise TransferAlreadyUsedError("Used transfer records are protected and cannot be deleted")
+
+    restored: list[int] = []
+    for item in db.scalars(
+        select(BankCardDeposit).where(BankCardDeposit.transfer_id == transfer_id)
+    ).all():
+        if item.purchase_id is not None:
+            purchase = db.get(BankCardPurchase, item.purchase_id)
+            if purchase is not None:
+                purchase.status = "pending"
+                restored.append(purchase.id)
+        db.delete(item)
+    db.delete(transfer)
+    db.flush()
+    remaining_total = round(sum(
+        item or 0 for item in db.scalars(select(BankCardDeposit.remaining_usdt)).all()
+    ), 4)
+    db.get(BankCardBalance, 1).balance = remaining_total
+    db.flush()
+    return {
+        "deleted_transfer_id": transfer_id,
+        "restored_purchase_ids": restored,
+        "balance": remaining_total,
+    }
 
 
 def available_lots(db: Session) -> list[BankCardDeposit]:

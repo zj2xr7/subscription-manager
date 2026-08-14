@@ -37,6 +37,14 @@ def init_db():
     if "remaining_usdt" not in columns:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE bank_card_deposits ADD COLUMN remaining_usdt FLOAT"))
+    deposit_columns = {column["name"] for column in inspect(engine).get_columns("bank_card_deposits")}
+    with engine.begin() as connection:
+        if "purchase_id" not in deposit_columns:
+            connection.execute(text("ALTER TABLE bank_card_deposits ADD COLUMN purchase_id INTEGER"))
+        if "transfer_id" not in deposit_columns:
+            connection.execute(text("ALTER TABLE bank_card_deposits ADD COLUMN transfer_id INTEGER"))
+        if "fee_allocated" not in deposit_columns:
+            connection.execute(text("ALTER TABLE bank_card_deposits ADD COLUMN fee_allocated FLOAT DEFAULT 0"))
     with SessionLocal() as db:
         if db.get(models.BankCardBalance, 1) is None:
             db.add(models.BankCardBalance(id=1, balance=0))
@@ -158,4 +166,68 @@ def init_db():
 
             purge_historical_adjustments(db)
             version.value = "5"
+        db.flush()
+        version = db.get(models.AppSettings, "schema_version")
+        if version is None or int(version.value or 0) < 6:
+            legacy = db.scalars(
+                select(models.BankCardDeposit)
+                .where(models.BankCardDeposit.transfer_id.is_(None))
+                .order_by(models.BankCardDeposit.created_at, models.BankCardDeposit.id)
+            ).all()
+
+            # This private deployment had four historical rows: the first was one
+            # withdrawal and the following three were one combined withdrawal.
+            groups: list[list[models.BankCardDeposit]] = []
+            if len(legacy) == 4:
+                groups = [[legacy[0]], legacy[1:]]
+            else:
+                groups = [[item] for item in legacy]
+
+            for group in groups:
+                purchases: list[tuple[models.BankCardDeposit, models.BankCardPurchase]] = []
+                for deposit in group:
+                    purchase = models.BankCardPurchase(
+                        cny_amount=deposit.cny_cost,
+                        c2c_rate=deposit.c2c_rate,
+                        purchased_usdt=deposit.usdt_amount,
+                        status="transferred",
+                        created_at=deposit.created_at,
+                        updated_at=deposit.created_at,
+                    )
+                    db.add(purchase)
+                    db.flush()
+                    deposit.purchase_id = purchase.id
+                    purchases.append((deposit, purchase))
+
+                combined = len(group) == 3
+                transfer_fee = 0.01 if combined else round(sum(item.chain_fee or 0 for item in group), 4)
+                gross = round(sum(item.usdt_amount for item in group), 4)
+                transfer = models.BankCardTransfer(
+                    gross_usdt=gross,
+                    chain_fee=transfer_fee,
+                    actual_received=round(gross - transfer_fee, 4),
+                    created_at=min(item.created_at for item in group),
+                )
+                db.add(transfer)
+                db.flush()
+
+                fee_left = transfer_fee
+                for deposit, _purchase in purchases:
+                    old_actual = round(deposit.actual_received, 4)
+                    allocated_fee = round(min(deposit.usdt_amount, fee_left), 4)
+                    fee_left = round(fee_left - allocated_fee, 4)
+                    new_actual = round(deposit.usdt_amount - allocated_fee, 4)
+                    deposit.transfer_id = transfer.id
+                    deposit.chain_fee = allocated_fee
+                    deposit.fee_allocated = allocated_fee
+                    deposit.actual_received = new_actual
+                    deposit.remaining_usdt = round((deposit.remaining_usdt or 0) + (new_actual - old_actual), 4)
+
+            if legacy:
+                db.flush()
+                balance = db.get(models.BankCardBalance, 1)
+                balance.balance = round(sum(
+                    item or 0 for item in db.scalars(select(models.BankCardDeposit.remaining_usdt)).all()
+                ), 4)
+            version.value = "6"
         db.commit()
