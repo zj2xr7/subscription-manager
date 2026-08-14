@@ -73,6 +73,37 @@ class DepositCreate(BaseModel):
     c2c_rate: float = Field(gt=0)
 
 
+class PurchaseCreate(DepositCreate):
+    pass
+
+
+class PurchaseUpdate(DepositCreate):
+    pass
+
+
+class PurchaseOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    cny_amount: float
+    c2c_rate: float
+    purchased_usdt: float
+    status: Literal["pending", "transferred"]
+    created_at: datetime
+    updated_at: datetime
+
+
+class TransferCreate(BaseModel):
+    purchase_ids: list[int] = Field(min_length=1)
+    chain_fee: float = Field(default=0.01, ge=0)
+
+    @field_validator("purchase_ids")
+    @classmethod
+    def unique_purchase_ids(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("Purchase IDs must be unique")
+        return value
+
+
 class DepositOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -82,7 +113,38 @@ class DepositOut(BaseModel):
     chain_fee: float
     actual_received: float
     remaining_usdt: float
+    purchase_id: int | None = None
+    transfer_id: int | None = None
+    fee_allocated: float = 0
     created_at: datetime
+
+
+class TransferItemOut(BaseModel):
+    deposit_id: int
+    purchase_id: int | None
+    cny_amount: float
+    c2c_rate: float
+    purchased_usdt: float
+    fee_allocated: float
+    actual_received: float
+    remaining_usdt: float
+
+
+class TransferOut(BaseModel):
+    id: int
+    gross_usdt: float
+    chain_fee: float
+    actual_received: float
+    deletable: bool
+    used_usdt: float
+    items: list[TransferItemOut]
+    created_at: datetime
+
+
+class TransferDeleteOut(BaseModel):
+    deleted_transfer_id: int
+    restored_purchase_ids: list[int]
+    balance: float
 
 
 class DepositDeleteOut(BaseModel):
@@ -135,6 +197,7 @@ class SubscriptionChargeRecordOut(BaseModel):
 class TopUpQuoteRequest(BaseModel):
     subscription_ids: list[int] = Field(default_factory=list)
     c2c_rate: float = Field(gt=0)
+    chain_fee: float = Field(default=0.01, ge=0)
 
 
 class TopUpQuoteItem(BaseModel):
@@ -150,6 +213,9 @@ class TopUpQuoteOut(BaseModel):
     reserved_usdt: float = 0
     covered_usdt: float = 0
     shortfall_usdt: float
+    pending_usdt: float = 0
+    transfer_fee: float = 0.01
+    additional_purchase_usdt: float = 0
     suggested_purchase_usdt: float
     suggested_cny_amount: float
 

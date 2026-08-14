@@ -11,6 +11,8 @@ from ..models import (
     BankCardCharge,
     BankCardChargeAllocation,
     BankCardDeposit,
+    BankCardPurchase,
+    BankCardTransfer,
     Subscription,
 )
 from ..schemas import (
@@ -19,11 +21,25 @@ from ..schemas import (
     DepositDeleteOut,
     DepositOut,
     LotOut,
+    PurchaseCreate,
+    PurchaseOut,
+    PurchaseUpdate,
     TopUpQuoteItem,
     TopUpQuoteOut,
     TopUpQuoteRequest,
+    TransferCreate,
+    TransferDeleteOut,
+    TransferOut,
 )
-from ..services.bank_funds import DepositAlreadyUsedError, delete_deposit_cascade
+from ..services.bank_funds import (
+    DepositAlreadyUsedError,
+    TransferAlreadyUsedError,
+    create_combined_transfer,
+    create_pending_purchase,
+    delete_deposit_cascade,
+    delete_unused_transfer,
+    transfer_details,
+)
 from ..services.funding_queue import build_bank_funding_queue
 
 router = APIRouter(prefix="/api/bank-card", tags=["bank-card"])
@@ -34,26 +50,117 @@ def get_balance(db: Session = Depends(get_db)):
     return db.get(BankCardBalance, 1)
 
 
+@router.post("/purchases", response_model=PurchaseOut, status_code=201)
+def create_purchase(payload: PurchaseCreate, db: Session = Depends(get_db)):
+    try:
+        purchase = create_pending_purchase(db, payload.cny_amount, payload.c2c_rate)
+        db.commit()
+        db.refresh(purchase)
+        return purchase
+    except Exception:
+        db.rollback()
+        raise
+
+
+@router.get("/purchases", response_model=list[PurchaseOut])
+def list_purchases(
+    status: str = Query("pending", pattern="^(pending|transferred|all)$"),
+    db: Session = Depends(get_db),
+):
+    statement = select(BankCardPurchase)
+    if status != "all":
+        statement = statement.where(BankCardPurchase.status == status)
+    return db.scalars(statement.order_by(BankCardPurchase.created_at, BankCardPurchase.id)).all()
+
+
+@router.put("/purchases/{purchase_id}", response_model=PurchaseOut)
+def update_purchase(purchase_id: int, payload: PurchaseUpdate, db: Session = Depends(get_db)):
+    purchase = db.get(BankCardPurchase, purchase_id)
+    if purchase is None:
+        raise HTTPException(404, "C2C purchase not found")
+    if purchase.status != "pending":
+        raise HTTPException(409, "Transferred C2C purchases cannot be edited")
+    purchase.cny_amount = round(payload.cny_amount, 2)
+    purchase.c2c_rate = round(payload.c2c_rate, 4)
+    purchase.purchased_usdt = round(payload.cny_amount / payload.c2c_rate, 4)
+    db.commit()
+    db.refresh(purchase)
+    return purchase
+
+
+@router.delete("/purchases/{purchase_id}", status_code=204)
+def delete_purchase(purchase_id: int, db: Session = Depends(get_db)):
+    purchase = db.get(BankCardPurchase, purchase_id)
+    if purchase is None:
+        raise HTTPException(404, "C2C purchase not found")
+    if purchase.status != "pending":
+        raise HTTPException(409, "Transferred C2C purchases cannot be deleted")
+    db.delete(purchase)
+    db.commit()
+
+
+@router.post("/transfers", response_model=TransferOut, status_code=201)
+def create_transfer(payload: TransferCreate, db: Session = Depends(get_db)):
+    try:
+        transfer, _deposits = create_combined_transfer(db, payload.purchase_ids, payload.chain_fee)
+        result = transfer_details(db, transfer)
+        db.commit()
+        return result
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(422, str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+
+@router.get("/transfers", response_model=list[TransferOut])
+def list_transfers(db: Session = Depends(get_db)):
+    transfers = db.scalars(
+        select(BankCardTransfer).order_by(BankCardTransfer.created_at.desc(), BankCardTransfer.id.desc())
+    ).all()
+    return [transfer_details(db, item) for item in transfers]
+
+
+@router.delete("/transfers/{transfer_id}", response_model=TransferDeleteOut)
+def delete_transfer(transfer_id: int, db: Session = Depends(get_db)):
+    try:
+        result = delete_unused_transfer(db, transfer_id)
+        if result is None:
+            raise HTTPException(404, "Transfer not found")
+        db.commit()
+        return result
+    except HTTPException:
+        db.rollback()
+        raise
+    except TransferAlreadyUsedError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+
 @router.post("/deposit", response_model=DepositOut, status_code=201)
 def create_deposit(payload: DepositCreate, db: Session = Depends(get_db)):
-    purchased = round(payload.cny_amount / payload.c2c_rate, 4)
-    if purchased <= 0.01:
-        raise HTTPException(422, "CNY amount must purchase more than the 0.01 USDT chain fee")
-    actual_received = round(purchased - 0.01, 4)
-    deposit = BankCardDeposit(
-        usdt_amount=purchased,
-        c2c_rate=payload.c2c_rate,
-        cny_cost=round(payload.cny_amount, 2),
-        chain_fee=0.01,
-        actual_received=actual_received,
-        remaining_usdt=actual_received,
-    )
-    balance = db.get(BankCardBalance, 1)
-    balance.balance = round(balance.balance + actual_received, 4)
-    db.add(deposit)
-    db.commit()
-    db.refresh(deposit)
-    return deposit
+    """Compatibility endpoint: create one purchase and withdraw it immediately."""
+    try:
+        purchase = create_pending_purchase(db, payload.cny_amount, payload.c2c_rate)
+        if purchase.purchased_usdt <= 0.01:
+            raise ValueError("CNY amount must purchase more than the 0.01 USDT chain fee")
+        _transfer, deposits = create_combined_transfer(db, [purchase.id], 0.01)
+        db.commit()
+        db.refresh(deposits[0])
+        return deposits[0]
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(422, str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.get("/deposits", response_model=list[DepositOut])
@@ -64,6 +171,9 @@ def list_deposits(db: Session = Depends(get_db)):
 @router.delete("/deposits/{deposit_id}", response_model=DepositDeleteOut)
 def delete_deposit(deposit_id: int, db: Session = Depends(get_db)):
     try:
+        deposit = db.get(BankCardDeposit, deposit_id)
+        if deposit is not None and deposit.transfer_id is not None:
+            raise HTTPException(409, "Delete the complete transfer instead of an individual transfer lot")
         result = delete_deposit_cascade(db, deposit_id)
         if result is None:
             raise HTTPException(404, "Deposit not found")
@@ -116,8 +226,13 @@ async def top_up_quote(payload: TopUpQuoteRequest, db: Session = Depends(get_db)
         if item.id not in selected_ids and funding[item.id]["queue_position"] <= last_position
     ), 4)
     balance = db.get(BankCardBalance, 1).balance
-    purchase = round(shortfall + 0.01, 4) if shortfall > 0 else 0
-    suggested_cny = math.ceil(purchase * payload.c2c_rate * 100 - 1e-9) / 100 if purchase else 0
+    pending = round(sum(db.scalars(
+        select(BankCardPurchase.purchased_usdt).where(BankCardPurchase.status == "pending")
+    ).all()), 4)
+    fee = round(payload.chain_fee, 4) if shortfall > 0 else 0
+    gross_needed = round(shortfall + fee, 4) if shortfall > 0 else 0
+    additional = round(max(gross_needed - pending, 0), 4)
+    suggested_cny = math.ceil(additional * payload.c2c_rate * 100 - 1e-9) / 100 if additional else 0
     return TopUpQuoteOut(
         items=items,
         required_usdt=required,
@@ -125,7 +240,10 @@ async def top_up_quote(payload: TopUpQuoteRequest, db: Session = Depends(get_db)
         reserved_usdt=reserved,
         covered_usdt=covered,
         shortfall_usdt=shortfall,
-        suggested_purchase_usdt=purchase,
+        pending_usdt=pending,
+        transfer_fee=fee,
+        additional_purchase_usdt=additional,
+        suggested_purchase_usdt=additional,
         suggested_cny_amount=suggested_cny,
     )
 
@@ -137,33 +255,30 @@ def list_transactions(
 ):
     transactions: list[dict] = []
     if type in ("all", "deposit"):
-        deposits = db.scalars(select(BankCardDeposit)).all()
-        for item in deposits:
-            linked_charge_ids = db.scalars(
-                select(BankCardChargeAllocation.charge_id)
-                .where(BankCardChargeAllocation.deposit_id == item.id)
-            ).all()
-            used_usdt = round(item.actual_received - (item.remaining_usdt or 0), 4)
+        transfers = db.scalars(select(BankCardTransfer)).all()
+        for transfer in transfers:
+            details = transfer_details(db, transfer)
             transactions.append({
-            "id": f"deposit-{item.id}",
-            "deposit_id": item.id,
-            "type": "deposit",
-            "title": "C2C 充值",
-            "usdt_delta": item.actual_received,
-            "cny_amount": item.cny_cost,
-            "c2c_rate": item.c2c_rate,
-            "balance_after": None,
-            "created_at": item.created_at,
-            "used_usdt": used_usdt,
-            "related_charge_count": len(set(linked_charge_ids)),
-            "deletable": used_usdt <= 0.00005 and not linked_charge_ids,
-            "details": {
-                "purchased_usdt": item.usdt_amount,
-                "chain_fee": item.chain_fee,
-                "actual_received": item.actual_received,
-                "remaining_usdt": item.remaining_usdt,
-            },
-            "allocations": [],
+                "id": f"transfer-{transfer.id}",
+                "transfer_id": transfer.id,
+                "type": "deposit",
+                "title": "USDT 提链到账",
+                "usdt_delta": transfer.actual_received,
+                "cny_amount": round(sum(item["cny_amount"] for item in details["items"]), 2),
+                "c2c_rate": None,
+                "balance_after": None,
+                "created_at": transfer.created_at,
+                "used_usdt": details["used_usdt"],
+                "related_charge_count": 0 if details["deletable"] else 1,
+                "deletable": details["deletable"],
+                "details": {
+                    "purchased_usdt": transfer.gross_usdt,
+                    "chain_fee": transfer.chain_fee,
+                    "actual_received": transfer.actual_received,
+                    "remaining_usdt": round(sum(item["remaining_usdt"] for item in details["items"]), 4),
+                    "items": details["items"],
+                },
+                "allocations": [],
             })
     if type in ("all", "charge"):
         charges = db.scalars(

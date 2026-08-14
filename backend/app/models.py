@@ -37,6 +37,35 @@ class BankCardDeposit(Base):
     chain_fee: Mapped[float] = mapped_column(Float, default=0.01)
     actual_received: Mapped[float] = mapped_column(Float, nullable=False)
     remaining_usdt: Mapped[float | None] = mapped_column(Float, nullable=True)
+    purchase_id: Mapped[int | None] = mapped_column(
+        ForeignKey("bank_card_purchases.id", ondelete="SET NULL"), nullable=True, unique=True
+    )
+    transfer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("bank_card_transfers.id", ondelete="CASCADE"), nullable=True
+    )
+    fee_allocated: Mapped[float] = mapped_column(Float, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class BankCardPurchase(Base):
+    __tablename__ = "bank_card_purchases"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cny_amount: Mapped[float] = mapped_column(Float, nullable=False)
+    c2c_rate: Mapped[float] = mapped_column(Float, nullable=False)
+    purchased_usdt: Mapped[float] = mapped_column(Float, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class BankCardTransfer(Base):
+    __tablename__ = "bank_card_transfers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    gross_usdt: Mapped[float] = mapped_column(Float, nullable=False)
+    chain_fee: Mapped[float] = mapped_column(Float, nullable=False)
+    actual_received: Mapped[float] = mapped_column(Float, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
