@@ -59,7 +59,7 @@ async def _cost_text(item: Subscription, db, api_key: str, bank_costs: dict[int,
             return f"预计成本：¥{estimate:.2f}（FIFO 批次成本）"
         return (
             f"预计成本：¥{estimate:.2f}\n\n"
-            f"USDT 余额缺口：{cost['shortfall_usdt']:.4f} USDT"
+            f"USDT 余额缺口：{cost['shortfall_usdt']:.2f} USDT"
         )
     cost = await calculate_cost(item.price, item.currency, item.payment_method, item.c2c_rate, api_key)
     return f"预计成本：¥{cost['cny_cost']:.2f}"

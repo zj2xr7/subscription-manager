@@ -95,8 +95,8 @@ async def build_bank_funding_queue(db: Session, api_key: str = "") -> tuple[list
             "estimate_cny_rate": None if status == "sufficient" else estimate_rate,
             "estimate_source": "fifo" if status == "sufficient" else estimate_quotes["source"],
             "formula": " + ".join(
-                f"{allocation.usdt_amount:.4f} × ¥{allocation.deposit.c2c_rate:.4f}"
+                f"{allocation.usdt_amount:.2f} × ¥{allocation.deposit.c2c_rate:.2f}"
                 for allocation in queued.allocations
-            ) or f"需要 {cost['required_usdt']:.4f} USDT",
+            ) or f"需要 {cost['required_usdt']:.2f} USDT",
         }
     return subscriptions, results
